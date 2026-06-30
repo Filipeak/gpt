@@ -1,27 +1,10 @@
 #include "gpt.h"
 #include "cuda_backend.h"
 #include "data_loader.h"
-#include <cmath>
+#include "lr_scheduling.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
-float get_lr(int step, int warmup, int total, float max_lr, float min_lr)
-{
-    if (step < warmup) // linear warmup
-    {
-        return max_lr * (step + 1) / warmup;
-    }
-
-    if (step >= total)
-    {
-        return min_lr;
-    }
-
-    float prog = (float)(step - warmup) / (total - warmup); // 0..1
-
-    return min_lr + 0.5f * (max_lr - min_lr) * (1.0f + cosf(3.14159265f * prog));
-}
 
 int main(int argc, char *argv[])
 {
@@ -135,7 +118,7 @@ int main(int argc, char *argv[])
 
             if (++micro % accum_steps == 0)
             {
-                float lr = get_lr(global_steps++, 100, total_steps, 1.2e-3f, 1.2e-4f);
+                float lr = get_lr_cosine_decay(global_steps++, 100, total_steps, 1.2e-3f, 1.2e-4f);
 
                 gpt.clip_grad_norm(1.0f);
                 gpt.optimizer_step(lr, 0.9f, 0.999f, 0.1f);
