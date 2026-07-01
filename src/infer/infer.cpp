@@ -68,6 +68,7 @@ int main(int argc, char *argv[])
     gpt_config config;
     config.max_seq_len = 256;
     config.vocab_size = 50257;
+    config.vocab_size_padded = 50304;
     config.num_layers = 12;
     config.num_heads = 12;
     config.d_model = 768;
@@ -88,7 +89,7 @@ int main(int argc, char *argv[])
 
     // Prepare data
     DataManager data_manager(backend);
-    TokenSampler sampler(config.vocab_size, temperature, top_k, top_p);
+    TokenSampler sampler(config.vocab_size, temperature, top_k, top_p); // We use not padded vocab size for sampling, as the padded tokens are not valid tokens.
 
     if (!data_manager.load_data(input_file, max_tokens))
     {
@@ -96,10 +97,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    float *new_token_logits_cpu = (float *)malloc(config.vocab_size * sizeof(float));
+    float *new_token_logits_cpu = (float *)malloc(config.vocab_size_padded * sizeof(float));
 
     // Prepare stats
-    float ttf_ms = 0.0f; // Time to first token
+    float ttft_ms = 0.0f; // Time to first token
     float avg_forward_time_ms = 0.0f;
     float avg_sample_time_ms = 0.0f;
 
@@ -116,7 +117,7 @@ int main(int argc, char *argv[])
 
         BENCHMARK_SCOPE_PRINT(ForwardPass, {
             gpt.forward(data_manager.device_data());
-            backend->device_memcpy_d2h(new_token_logits_cpu, gpt.activations()->logits + (current_size - 1) * config.vocab_size, config.vocab_size * sizeof(float)); // Copy last token logits to host
+            backend->device_memcpy_d2h(new_token_logits_cpu, gpt.activations()->logits + (current_size - 1) * config.vocab_size_padded, config.vocab_size_padded * sizeof(float)); // Copy last token logits to host
         });
 
         BENCHMARK_SCOPE_PRINT(Sample, {
@@ -125,7 +126,7 @@ int main(int argc, char *argv[])
 
         if (i == 0)
         {
-            ttf_ms = elapsed_ForwardPass + elapsed_Sample;
+            ttft_ms = elapsed_ForwardPass + elapsed_Sample;
         }
 
         avg_forward_time_ms += elapsed_ForwardPass;
@@ -138,7 +139,7 @@ int main(int argc, char *argv[])
     avg_forward_time_ms /= max_tokens;
     avg_sample_time_ms /= max_tokens;
 
-    LOG_INFO("Time to first token: %.2f ms", ttf_ms);
+    LOG_INFO("Time to first token (TTFT): %.2f ms", ttft_ms);
     LOG_INFO("Average forward pass time: %.2f ms (%.2f tokens/second)", avg_forward_time_ms, 1000.0f / avg_forward_time_ms);
     LOG_INFO("Average sampling time: %.2f ms (%.2f tokens/second)", avg_sample_time_ms, 1000.0f / avg_sample_time_ms);
 

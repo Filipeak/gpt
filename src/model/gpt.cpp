@@ -5,7 +5,7 @@
 
 void gpt_config::print() const
 {
-    LOG_INFO("GPT Configuration: max_seq_len=%d, vocab_size=%d, num_layers=%d, num_heads=%d, d_model=%d, d_ffn=%d", max_seq_len, vocab_size, num_layers, num_heads, d_model, d_ffn);
+    LOG_INFO("GPT Configuration: max_seq_len=%d, vocab_size=%d (padded: %d), num_layers=%d, num_heads=%d, d_model=%d, d_ffn=%d", max_seq_len, vocab_size, vocab_size_padded, num_layers, num_heads, d_model, d_ffn);
 }
 
 static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[], size_t *sizes, size_t num_tensors, size_t *total_size_out)
@@ -37,12 +37,12 @@ gpt_weights::gpt_weights(IGPTBackend *backend, const gpt_config *config) : backe
 {
     const int L = config->num_layers;
     const int S = config->max_seq_len;
-    const int V = config->vocab_size;
+    const int Vp = config->vocab_size_padded;
     const int D = config->d_model;
     const int F = config->d_ffn;
 
     size_t sizes[GPT_WEIGHTS_PARAMS_COUNT];
-    sizes[0] = V * D;         // wte
+    sizes[0] = Vp * D;         // wte
     sizes[1] = S * D;         // wpe
     sizes[2] = L * D;         // ln_1_w
     sizes[3] = L * D;         // ln_1_b
@@ -101,7 +101,7 @@ gpt_activations::gpt_activations(IGPTBackend *backend, const gpt_config *config,
     const int L = config->num_layers;
     const int B = batch_size;
     const int T = seq_len;
-    const int V = config->vocab_size;
+    const int Vp = config->vocab_size_padded;
     const int H = config->num_heads;
     const int D = config->d_model;
     const int F = config->d_ffn;
@@ -124,8 +124,8 @@ gpt_activations::gpt_activations(IGPTBackend *backend, const gpt_config *config,
     sizes[14] = B * T * D;        // ln_f_out
     sizes[15] = B * T;            // ln_f_means
     sizes[16] = B * T;            // ln_f_vars
-    sizes[17] = B * T * V;        // logits
-    sizes[18] = B * T * V;        // probs
+    sizes[17] = B * T * Vp;        // logits
+    sizes[18] = B * T * Vp;        // probs
 
     float **ptrs[] = {
         &this->x_emb,
@@ -172,7 +172,7 @@ gpt_cache_x_grads::gpt_cache_x_grads(IGPTBackend *backend, const gpt_config *con
     const int L = config->num_layers;
     const int B = batch_size;
     const int T = seq_len;
-    const int V = config->vocab_size;
+    const int Vp = config->vocab_size_padded;
     const int H = config->num_heads;
     const int D = config->d_model;
     const int F = config->d_ffn;
@@ -189,7 +189,7 @@ gpt_cache_x_grads::gpt_cache_x_grads(IGPTBackend *backend, const gpt_config *con
     sizes[8] = L * B * T * F;     // ffn_down
     sizes[9] = B * T * D;         // ln_f
     sizes[10] = B * T * D;        // unembedding
-    sizes[11] = B * T * V;        // softmax_final
+    sizes[11] = B * T * Vp;        // softmax_final
 
     float **ptrs[] = {
         &this->ln_1,
@@ -511,13 +511,13 @@ void GPT::forward(const int *input_tokens)
     input = activations_->ln_f_out;
 
     // Output Projection to logits
-    backend_->device_unembedding_forward(activations_->logits, input, weights_->wte, batch_size_, seq_len_, config_->d_model, config_->vocab_size);
+    backend_->device_unembedding_forward(activations_->logits, input, weights_->wte, batch_size_, seq_len_, config_->d_model, config_->vocab_size_padded);
     input = activations_->logits;
 
     // Softmax to probabilities (only if use_grad_ is true, otherwise skip to save computation)
     if (use_grad_)
     {
-        backend_->device_softmax_forward(activations_->probs, input, batch_size_, seq_len_, config_->vocab_size);
+        backend_->device_softmax_forward(activations_->probs, input, batch_size_, seq_len_, config_->vocab_size, config_->vocab_size_padded);
     }
 }
 
@@ -538,11 +538,11 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
     float *grad_y = NULL;
 
     // Cross Entropy + Softmax Backward
-    backend_->device_cross_entropy_softmax_fused_backward(cache_grads_->softmax_final, activations_->probs, label_tokens, batch_size_, seq_len_, config_->vocab_size);
+    backend_->device_cross_entropy_softmax_fused_backward(cache_grads_->softmax_final, activations_->probs, label_tokens, batch_size_, seq_len_, config_->vocab_size, config_->vocab_size_padded);
     grad_y = cache_grads_->softmax_final;
 
     // Unembedding Backward
-    backend_->device_unembedding_backward(cache_grads_->unembedding, weights_grads_->wte, grad_y, activations_->ln_f_out, weights_->wte, batch_size_, seq_len_, config_->d_model, config_->vocab_size);
+    backend_->device_unembedding_backward(cache_grads_->unembedding, weights_grads_->wte, grad_y, activations_->ln_f_out, weights_->wte, batch_size_, seq_len_, config_->d_model, config_->vocab_size_padded);
     grad_y = cache_grads_->unembedding;
 
     // Final LayerNorm Backward
@@ -668,7 +668,7 @@ void GPT::optimizer_step(float learning_rate, float beta1, float beta2, float de
 
     const float eps = 1e-8f;
 
-    backend_->device_adamw_step(weights_->wte, weights_grads_->wte, weights_grads_momentum_->wte, weights_grads_velocity_->wte, config_->vocab_size * config_->d_model, learning_rate, beta1, beta2, eps, decay, current_step_);
+    backend_->device_adamw_step(weights_->wte, weights_grads_->wte, weights_grads_momentum_->wte, weights_grads_velocity_->wte, config_->vocab_size_padded * config_->d_model, learning_rate, beta1, beta2, eps, decay, current_step_);
     backend_->device_adamw_step(weights_->wpe, weights_grads_->wpe, weights_grads_momentum_->wpe, weights_grads_velocity_->wpe, config_->max_seq_len * config_->d_model, learning_rate, beta1, beta2, eps, decay, current_step_);
     backend_->device_adamw_step(weights_->ln_1_w, weights_grads_->ln_1_w, weights_grads_momentum_->ln_1_w, weights_grads_velocity_->ln_1_w, config_->num_layers * config_->d_model, learning_rate, beta1, beta2, eps, 0.0f, current_step_);
     backend_->device_adamw_step(weights_->ln_1_b, weights_grads_->ln_1_b, weights_grads_momentum_->ln_1_b, weights_grads_velocity_->ln_1_b, config_->num_layers * config_->d_model, learning_rate, beta1, beta2, eps, 0.0f, current_step_);
@@ -713,7 +713,7 @@ float GPT::loss(const int *label_tokens)
         return -1.0f;
     }
 
-    backend_->device_cross_entropy_loss(loss_cache_, activations_->probs, label_tokens, batch_size_, seq_len_, config_->vocab_size);
+    backend_->device_cross_entropy_loss(loss_cache_, activations_->probs, label_tokens, batch_size_, seq_len_, config_->vocab_size_padded);
 
     float loss_value;
     backend_->device_memcpy_d2h(&loss_value, loss_cache_, sizeof(float));

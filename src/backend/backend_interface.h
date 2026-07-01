@@ -207,35 +207,35 @@ public:
 
     /**
      * Tensors:
-     * - y              [batch_size, seq_len, size]
-     * - x              [batch_size, seq_len, size]
+     * - y              [batch_size, seq_len, vocab_size_padded]
+     * - x              [batch_size, seq_len, vocab_size_padded]
      *
      * Performs:
      * - y = softmax(x, axis=-1)
      */
-    virtual void device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int size) = 0;
+    virtual void device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) = 0;
 
     /**
      * Tensors:
-     * - grad_x         [batch_size, seq_len, size]
-     * - grad_y         [batch_size, seq_len, size]
-     * - y              [batch_size, seq_len, size]
+     * - grad_x         [batch_size, seq_len, vocab_size_padded]
+     * - grad_y         [batch_size, seq_len, vocab_size_padded]
+     * - y              [batch_size, seq_len, vocab_size_padded]
      *
      * Performs:
      * - grad_x = softmax_backward(grad_y, y)
      */
-    virtual void device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int size) = 0;
+    virtual void device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) = 0;
 
     /**
      * Tensors:
-     * - grad_x         [batch_size, seq_len, vocab_size]
-     * - y_softmax      [batch_size, seq_len, vocab_size]
+     * - grad_x         [batch_size, seq_len, vocab_size_padded]
+     * - y_softmax      [batch_size, seq_len, vocab_size_padded]
      * - tokens_labels  [batch_size, seq_len]
      *
      * Performs:
      * - grad_x = (y_softmax - one_hot(tokens_labels)) / (batch_size * seq_len)
      */
-    virtual void device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size) = 0;
+    virtual void device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) = 0;
 
     /**
      * Tensors:
@@ -244,7 +244,7 @@ public:
      * - tokens_labels  [batch_size, seq_len]
      *
      * Performs:
-     * - Mean cross-entropy loss computation
+     * - Mean cross-entropy loss computation (vocab_size is assumed to be padded)
      */
     virtual void device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size) = 0;
 

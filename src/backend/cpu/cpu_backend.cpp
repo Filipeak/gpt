@@ -512,7 +512,7 @@ void CPUBackend::device_residual_backward(float *grad_current, const float *grad
     }
 }
 
-void CPUBackend::device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int size)
+void CPUBackend::device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     for (int b = 0; b < batch_size; ++b)
     {
@@ -520,9 +520,9 @@ void CPUBackend::device_softmax_forward(float *y, const float *x, int batch_size
         {
             float max_val = -FLT_MAX;
 
-            for (int i = 0; i < size; ++i)
+            for (int i = 0; i < vocab_size; ++i)
             {
-                float val = x[TENSOR_IDX_3D(b, s, i, seq_len, size)];
+                float val = x[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)];
 
                 if (val > max_val)
                 {
@@ -532,23 +532,28 @@ void CPUBackend::device_softmax_forward(float *y, const float *x, int batch_size
 
             float sum_exp = 0.0f;
 
-            for (int i = 0; i < size; ++i)
+            for (int i = 0; i < vocab_size; ++i)
             {
-                float exp_val = expf(x[TENSOR_IDX_3D(b, s, i, seq_len, size)] - max_val);
+                float exp_val = expf(x[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] - max_val);
 
-                y[TENSOR_IDX_3D(b, s, i, seq_len, size)] = exp_val;
+                y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] = exp_val;
                 sum_exp += exp_val;
             }
 
-            for (int i = 0; i < size; ++i)
+            for (int i = 0; i < vocab_size; ++i)
             {
-                y[TENSOR_IDX_3D(b, s, i, seq_len, size)] /= sum_exp;
+                y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] /= sum_exp;
+            }
+
+            for (int i = vocab_size; i < vocab_size_padded; ++i)
+            {
+                y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] = 0.0f;
             }
         }
     }
 }
 
-void CPUBackend::device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int size)
+void CPUBackend::device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     for (int b = 0; b < batch_size; ++b)
     {
@@ -556,20 +561,20 @@ void CPUBackend::device_softmax_backward(float *grad_x, const float *grad_y, con
         {
             float dot_product = 0.0f;
 
-            for (int i = 0; i < size; ++i)
+            for (int i = 0; i < vocab_size; ++i)
             {
-                dot_product += grad_y[TENSOR_IDX_3D(b, s, i, seq_len, size)] * y[TENSOR_IDX_3D(b, s, i, seq_len, size)];
+                dot_product += grad_y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] * y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)];
             }
 
-            for (int i = 0; i < size; ++i)
+            for (int i = 0; i < vocab_size; ++i)
             {
-                grad_x[TENSOR_IDX_3D(b, s, i, seq_len, size)] = y[TENSOR_IDX_3D(b, s, i, seq_len, size)] * (grad_y[TENSOR_IDX_3D(b, s, i, seq_len, size)] - dot_product);
+                grad_x[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] = y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] * (grad_y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] - dot_product);
             }
         }
     }
 }
 
-void CPUBackend::device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size)
+void CPUBackend::device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     for (int b = 0; b < batch_size; ++b)
     {
@@ -579,10 +584,10 @@ void CPUBackend::device_cross_entropy_softmax_fused_backward(float *grad_x, cons
 
             for (int v = 0; v < vocab_size; ++v)
             {
-                float softmax_val = y_softmax[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size)];
+                float softmax_val = y_softmax[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size_padded)];
                 float one_hot_val = (v == label) ? 1.0f : 0.0f;
 
-                grad_x[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size)] = (softmax_val - one_hot_val) / (float)(batch_size * seq_len);
+                grad_x[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size_padded)] = (softmax_val - one_hot_val) / (float)(batch_size * seq_len);
             }
         }
     }

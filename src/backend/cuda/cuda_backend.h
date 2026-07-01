@@ -32,9 +32,9 @@ public:
     void device_attention_backward(float *grad_x, float *grad_softmax_cache, const float *grad_y, const float *qkv, const float *attn_scores, int batch_size, int seq_len, int hidden_size, int num_heads) override;
     void device_residual_forward(float *current, const float *residual, int batch_size, int seq_len, int hidden_size) override;
     void device_residual_backward(float *grad_current, const float *grad_residual, int batch_size, int seq_len, int hidden_size) override;
-    void device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int size) override;
-    void device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int size) override;
-    void device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size) override;
+    void device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) override;
+    void device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) override;
+    void device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) override;
     void device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size) override;
     void device_adamw_step(float *params, float *g, float *m, float *v, int size, float lr, float beta1, float beta2, float eps, float weight_decay, int step) override;
     void device_clip_grad_norm(float *g, int size, float max_norm) override;

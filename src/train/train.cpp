@@ -63,6 +63,7 @@ int main(int argc, char *argv[])
     gpt_config config;
     config.max_seq_len = 256;
     config.vocab_size = 50257;
+    config.vocab_size_padded = 50304;
     config.num_layers = 12;
     config.num_heads = 12;
     config.d_model = 768;

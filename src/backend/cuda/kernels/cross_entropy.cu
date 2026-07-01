@@ -10,7 +10,8 @@ __global__ void cross_entropy_softmax_fused_backward_kernel(
     const int *__restrict__ tokens_labels,
     int batch_size,
     int seq_len,
-    int vocab_size)
+    int vocab_size,
+    int vocab_size_padded)
 {
     const int batch = blockIdx.x * blockDim.x + threadIdx.x;
     const int seq = blockIdx.y * blockDim.y + threadIdx.y;
@@ -23,17 +24,17 @@ __global__ void cross_entropy_softmax_fused_backward_kernel(
 
     const int label_idx = TENSOR_IDX_2D(batch, seq, seq_len);
     const int label = tokens_labels[label_idx];
-    const int grad_idx = TENSOR_IDX_3D(batch, seq, vocab, seq_len, vocab_size);
+    const int grad_idx = TENSOR_IDX_3D(batch, seq, vocab, seq_len, vocab_size_padded);
 
     grad_x[grad_idx] = (y_softmax[grad_idx] - (vocab == label ? 1.0f : 0.0f)) / (float)(batch_size * seq_len);
 }
 
-void CUDABackend::device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size)
+void CUDABackend::device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     const dim3 blockDim(8, 8, 8);
     const dim3 gridDim((batch_size + blockDim.x - 1) / blockDim.x,
                        (seq_len + blockDim.y - 1) / blockDim.y,
-                       (vocab_size + blockDim.z - 1) / blockDim.z);
+                       (vocab_size_padded + blockDim.z - 1) / blockDim.z);
 
     cross_entropy_softmax_fused_backward_kernel<<<gridDim, blockDim>>>(
         grad_x,
@@ -41,7 +42,8 @@ void CUDABackend::device_cross_entropy_softmax_fused_backward(float *grad_x, con
         tokens_labels,
         batch_size,
         seq_len,
-        vocab_size);
+        vocab_size,
+        vocab_size_padded);
 
     CUDA_KERNEL_CHECK();
 }

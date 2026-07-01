@@ -7,7 +7,8 @@ __global__ void softmax_forward_kernel(
     float *__restrict__ y,
     const float *__restrict__ x,
     int n,
-    int d_model)
+    int vocab_size,
+    int vocab_size_padded)
 {
     const int row = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -18,9 +19,9 @@ __global__ void softmax_forward_kernel(
 
     float max_val = -FLT_MAX;
 
-    for (int i = 0; i < d_model; i++)
+    for (int i = 0; i < vocab_size; i++)
     {
-        float val = x[TENSOR_IDX_2D(row, i, d_model)];
+        float val = x[TENSOR_IDX_2D(row, i, vocab_size_padded)];
 
         if (val > max_val)
         {
@@ -30,21 +31,27 @@ __global__ void softmax_forward_kernel(
 
     float sum_exp = 0.0f;
 
-    for (int i = 0; i < d_model; i++)
+    for (int i = 0; i < vocab_size; i++)
     {
-        float exp_val = expf(x[TENSOR_IDX_2D(row, i, d_model)] - max_val);
+        float exp_val = expf(x[TENSOR_IDX_2D(row, i, vocab_size_padded)] - max_val);
 
-        y[TENSOR_IDX_2D(row, i, d_model)] = exp_val;
+        y[TENSOR_IDX_2D(row, i, vocab_size_padded)] = exp_val;
         sum_exp += exp_val;
     }
 
-    for (int i = 0; i < d_model; i++)
+    for (int i = 0; i < vocab_size; i++)
     {
-        y[TENSOR_IDX_2D(row, i, d_model)] /= sum_exp;
+        y[TENSOR_IDX_2D(row, i, vocab_size_padded)] /= sum_exp;
+    }
+
+    // Set the padded values to zero
+    for (int i = vocab_size; i < vocab_size_padded; i++)
+    {
+        y[TENSOR_IDX_2D(row, i, vocab_size_padded)] = 0.0f;
     }
 }
 
-void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int hidden_size)
+void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     const int n = batch_size * seq_len;
     const int block_size = 256;
@@ -54,7 +61,8 @@ void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_siz
         y,
         x,
         n,
-        hidden_size);
+        vocab_size,
+        vocab_size_padded);
 
     CUDA_KERNEL_CHECK();
 }
@@ -64,7 +72,8 @@ __global__ void softmax_backward_kernel(
     const float *__restrict__ grad_y,
     const float *__restrict__ y,
     int n,
-    int d_model)
+    int vocab_size,
+    int vocab_size_padded)
 {
     const int row = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -75,20 +84,20 @@ __global__ void softmax_backward_kernel(
 
     float dot_product = 0.0f;
 
-    for (int i = 0; i < d_model; i++)
+    for (int i = 0; i < vocab_size; i++)
     {
-        const int idx = TENSOR_IDX_2D(row, i, d_model);
+        const int idx = TENSOR_IDX_2D(row, i, vocab_size_padded);
         dot_product += grad_y[idx] * y[idx];
     }
 
-    for (int i = 0; i < d_model; i++)
+    for (int i = 0; i < vocab_size; i++)
     {
-        const int idx = TENSOR_IDX_2D(row, i, d_model);
+        const int idx = TENSOR_IDX_2D(row, i, vocab_size_padded);
         grad_x[idx] = y[idx] * (grad_y[idx] - dot_product);
     }
 }
 
-void CUDABackend::device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int size)
+void CUDABackend::device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     const int n = batch_size * seq_len;
     const int block_size = 256;
@@ -99,7 +108,8 @@ void CUDABackend::device_softmax_backward(float *grad_x, const float *grad_y, co
         grad_y,
         y,
         n,
-        size);
+        vocab_size,
+        vocab_size_padded);
 
     CUDA_KERNEL_CHECK();
 }

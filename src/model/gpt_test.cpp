@@ -150,6 +150,7 @@ int main()
     gpt_config config;
     config.max_seq_len = 16;
     config.vocab_size = 32;
+    config.vocab_size_padded = 48;
     config.num_layers = 2;
     config.num_heads = 2;
     config.d_model = 8;

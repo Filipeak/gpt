@@ -6,12 +6,13 @@
 // Model configuration
 struct gpt_config
 {
-    int max_seq_len; // Maximum number of tokens in a sequence
-    int vocab_size;  // Size of the vocabulary (number of unique tokens)
-    int num_layers;  // Number of Transformer layers
-    int num_heads;   // Number of attention heads in each Transformer layer
-    int d_model;     // Dimensionality of the model (hidden size)
-    int d_ffn;       // Dimensionality of the feedforward network in each Transformer layer
+    int max_seq_len;       // Maximum number of tokens in a sequence
+    int vocab_size;        // Size of the vocabulary (number of unique tokens)
+    int vocab_size_padded; // Size of the vocabulary padded to the nearest multiple of 128
+    int num_layers;        // Number of Transformer layers
+    int num_heads;         // Number of attention heads in each Transformer layer
+    int d_model;           // Dimensionality of the model (hidden size)
+    int d_ffn;             // Dimensionality of the feedforward network in each Transformer layer
 
     // Utility functions
     void print() const;
@@ -137,7 +138,7 @@ public:
     ~GPT();
 
     void init(float mean, float stddev);
-    bool load_checkpoint(const char *filename);
+    bool load_checkpoint(const char *filename); // TODO: Load also model config, not only binary weights
     bool save_checkpoint(const char *filename) const;
 
     void set_size(int batch_size, int seq_len);
