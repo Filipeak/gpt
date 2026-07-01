@@ -46,7 +46,7 @@ void CUDABackend::device_linear_activation_fused_forward(float *y, float *act, c
         &beta,
         y, output_size));
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 
     const int n = batch_size * seq_len;
     const dim3 blockDim(16, 16);
@@ -60,7 +60,7 @@ void CUDABackend::device_linear_activation_fused_forward(float *y, float *act, c
         n,
         output_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }
 
 __global__ void linear_bias_gradient_kernel(
@@ -104,7 +104,7 @@ void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *gr
         &beta,
         grad_x, input_size));
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 
     // grad_w += x^T @ grad_y
     CUBLAS_CHECK(cublasSgemm(
@@ -117,7 +117,7 @@ void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *gr
         &alpha, // Using alpha instead of beta to accumulate into
         grad_w, output_size));
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 
     // grad_b += sum(grad_y, axis=0)
     const int block_size = 256;
@@ -129,7 +129,7 @@ void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *gr
         batch_size * seq_len,
         output_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }
 
 __global__ void activation_backward_kernel(
@@ -172,5 +172,5 @@ void CUDABackend::device_activation_backward(float *grad_x, const float *grad_y,
         n,
         output_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }

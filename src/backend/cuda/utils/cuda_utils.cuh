@@ -32,7 +32,6 @@
                    __FILE__,                           \
                    __LINE__,                           \
                    result);                            \
-                                                       \
             abort();                                   \
         }                                              \
     } while (0)
@@ -53,7 +52,16 @@
     } while (0)
 
 #ifndef NDEBUG
-#define CUDA_DEBUG_SYNC() CUDA_CHECK(cudaDeviceSynchronize())
+#define CUDA_KERNEL_CHECK()                  \
+    do                                       \
+    {                                        \
+        CUDA_CHECK(cudaGetLastError());      \
+        CUDA_CHECK(cudaDeviceSynchronize()); \
+    } while (0)
 #else
-#define CUDA_DEBUG_SYNC() ((void)0)
+#define CUDA_KERNEL_CHECK()             \
+    do                                  \
+    {                                   \
+        CUDA_CHECK(cudaGetLastError()); \
+    } while (0)
 #endif

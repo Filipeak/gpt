@@ -20,7 +20,7 @@ void CUDABackend::device_residual_forward(float *current, const float *residual,
         residual, cols,
         current, cols));
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }
 
 void CUDABackend::device_residual_backward(float *grad_current, const float *grad_residual, int batch_size, int seq_len, int hidden_size)

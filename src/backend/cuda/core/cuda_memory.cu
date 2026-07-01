@@ -49,6 +49,8 @@ void CUDABackend::device_fill_const(float *ptr, float value, size_t size)
         ptr,
         value,
         size);
+
+    CUDA_KERNEL_CHECK();
 }
 
 void CUDABackend::device_memcpy_d2h(void *dst, const void *src, size_t size)

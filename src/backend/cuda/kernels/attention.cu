@@ -84,7 +84,7 @@ void CUDABackend::device_attention_forward(float *y, float *scores, const float 
             scores_head, seq_len, num_heads * seq_len * seq_len,
             batch_size));
 
-        CUDA_DEBUG_SYNC();
+        CUDA_KERNEL_CHECK();
     }
 
     // Normalize scores with softmax
@@ -96,6 +96,8 @@ void CUDABackend::device_attention_forward(float *y, float *scores, const float 
         scores,
         n,
         seq_len);
+
+    CUDA_KERNEL_CHECK();
 
     // Final weighting
     const float alpha_final = 1.0f;
@@ -118,7 +120,7 @@ void CUDABackend::device_attention_forward(float *y, float *scores, const float 
             out_head, hidden_size, seq_len * hidden_size,
             batch_size));
 
-        CUDA_DEBUG_SYNC();
+        CUDA_KERNEL_CHECK();
     }
 }
 
@@ -183,7 +185,7 @@ void CUDABackend::device_attention_backward(float *grad_x, float *grad_softmax_c
             grad_softmax_cache_head, seq_len, num_heads * seq_len * seq_len,
             batch_size));
 
-        CUDA_DEBUG_SYNC();
+        CUDA_KERNEL_CHECK();
 
         // Compute softmax backward for the given cache
         const dim3 block_size(16, 16);
@@ -196,7 +198,7 @@ void CUDABackend::device_attention_backward(float *grad_x, float *grad_softmax_c
             seq_len,
             num_heads * seq_len * seq_len);
 
-        CUDA_DEBUG_SYNC();
+        CUDA_KERNEL_CHECK();
 
         // Compute grad_q = grad_softmax_cache * K / sqrt(d_k)
         float *grad_x_head_q = grad_x + hidden_size * 0 + head * head_size;
@@ -212,7 +214,7 @@ void CUDABackend::device_attention_backward(float *grad_x, float *grad_softmax_c
             grad_x_head_q, 3 * hidden_size, seq_len * 3 * hidden_size,
             batch_size));
 
-        CUDA_DEBUG_SYNC();
+        CUDA_KERNEL_CHECK();
 
         // Compute grad_k = grad_softmax_cache^T * Q / sqrt(d_k)
         float *grad_x_head_k = grad_x + hidden_size * 1 + head * head_size;
@@ -228,7 +230,7 @@ void CUDABackend::device_attention_backward(float *grad_x, float *grad_softmax_c
             grad_x_head_k, 3 * hidden_size, seq_len * 3 * hidden_size,
             batch_size));
 
-        CUDA_DEBUG_SYNC();
+        CUDA_KERNEL_CHECK();
 
         // Compute grad_v = attn_scores^T * grad_y
         float *grad_x_head_v = grad_x + hidden_size * 2 + head * head_size;
@@ -244,6 +246,6 @@ void CUDABackend::device_attention_backward(float *grad_x, float *grad_softmax_c
             grad_x_head_v, 3 * hidden_size, seq_len * 3 * hidden_size,
             batch_size));
 
-        CUDA_DEBUG_SYNC();
+        CUDA_KERNEL_CHECK();
     }
 }

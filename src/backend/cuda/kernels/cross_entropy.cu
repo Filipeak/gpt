@@ -43,7 +43,7 @@ void CUDABackend::device_cross_entropy_softmax_fused_backward(float *grad_x, con
         seq_len,
         vocab_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }
 
 __global__ void cross_entropy_compute_kernel(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size)
@@ -82,5 +82,5 @@ void CUDABackend::device_cross_entropy_loss(float *loss, const float *y_softmax,
         seq_len,
         vocab_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }

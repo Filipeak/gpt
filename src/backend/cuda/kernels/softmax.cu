@@ -56,7 +56,7 @@ void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_siz
         n,
         hidden_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }
 
 __global__ void softmax_backward_kernel(
@@ -101,5 +101,5 @@ void CUDABackend::device_softmax_backward(float *grad_x, const float *grad_y, co
         n,
         size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }

@@ -72,7 +72,7 @@ void CUDABackend::device_layernorm_forward(float *y, float *means, float *vars, 
         n,
         hidden_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }
 
 __global__ void layernorm_backward_kernel(
@@ -170,7 +170,7 @@ void CUDABackend::device_layernorm_backward(float *grad_x, float *grad_gamma, fl
         n,
         hidden_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 
     const int block_size_weights = 256;
     const int grid_size_weights = (hidden_size + block_size_weights - 1) / block_size_weights;
@@ -186,5 +186,5 @@ void CUDABackend::device_layernorm_backward(float *grad_x, float *grad_gamma, fl
         n,
         hidden_size);
 
-    CUDA_DEBUG_SYNC();
+    CUDA_KERNEL_CHECK();
 }

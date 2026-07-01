@@ -51,4 +51,6 @@ void CUDABackend::device_adamw_step(float *params, float *g, float *m, float *v,
         bias_correction2,
         eps,
         weight_decay);
+
+    CUDA_KERNEL_CHECK();
 }
