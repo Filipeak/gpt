@@ -55,7 +55,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (model_file == nullptr || input_file == nullptr || output_file == nullptr)
+    if (model_file == nullptr || input_file == nullptr || output_file == nullptr || max_tokens <= 0 || temperature <= 0.0f || top_k < 0 || top_p < 0.0f || top_p > 1.0f)
     {
         LOG_ERROR("Usage: %s --model <model_file> --input <input_file> --output <output_file> [--seed <seed>] [--max-tokens <max_tokens>] [--temperature <temperature>] [--top-k <top_k>] [--top-p <top_p>]\n", argv[0]);
         return 1;
@@ -80,10 +80,21 @@ int main(int argc, char *argv[])
     GPT gpt(backend, &config, false);
 
     // Load checkpoint
-    gpt.load_checkpoint(model_file);
+    if (!gpt.load_checkpoint(model_file))
+    {
+        LOG_ERROR("Failed to load checkpoint.");
+        return 1;
+    }
 
     // Prepare data
-    DataManager data_manager(backend, input_file, max_tokens);
+    DataManager data_manager(backend);
+
+    if (!data_manager.load_data(input_file, max_tokens))
+    {
+        LOG_ERROR("Failed to load input data.");
+        return 1;
+    }
+
     float *new_token_logits = (float *)malloc(config.vocab_size * sizeof(float));
 
     // Measure time
@@ -112,7 +123,11 @@ int main(int argc, char *argv[])
     LOG_INFO("Generated %d tokens in %.2f seconds. (%.2f tokens/second)", max_tokens, std::chrono::duration<double>(end_time - start_time).count(), (double)max_tokens / std::chrono::duration<double>(end_time - start_time).count());
 
     // Save generated tokens to output file
-    data_manager.save_data(output_file);
+    if (!data_manager.save_data(output_file))
+    {
+        LOG_ERROR("Failed to save generated tokens.");
+        return 1;
+    }
 
     // Clean up
     delete backend;

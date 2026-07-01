@@ -5,11 +5,8 @@
 #include <cstdlib>
 #include <cstring>
 
-DataManager::DataManager(IGPTBackend *backend, const char *input_path, int tokens_to_generate) : backend_(backend), data_(nullptr), d_data_(nullptr), data_size_(0), current_index_(0)
+DataManager::DataManager(IGPTBackend *backend) : backend_(backend)
 {
-    load_data(input_path, tokens_to_generate);
-
-    backend_->device_malloc((void **)&d_data_, data_size_ * sizeof(int));
 }
 
 DataManager::~DataManager()
@@ -39,14 +36,71 @@ void DataManager::push_token(int token)
     }
 }
 
-void DataManager::save_data(const char *output_path)
+bool DataManager::load_data(const char *data_path, int additional_tokens)
+{
+    FILE *fp = fopen(data_path, "rb");
+
+    if (!fp)
+    {
+        LOG_ERROR("Could not open file %s for reading.", data_path);
+        return false;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    size_t size = ftell(fp);
+    size_t count = size / sizeof(uint16_t);
+    fseek(fp, 0, SEEK_SET);
+
+    uint16_t *tmp_data = (uint16_t *)malloc(size);
+
+    if (!tmp_data)
+    {
+        LOG_ERROR("Could not allocate memory for training data.");
+        fclose(fp);
+        return false;
+    }
+
+    size_t read_count = fread(tmp_data, sizeof(uint16_t), count, fp);
+    fclose(fp);
+
+    if (read_count != count)
+    {
+        LOG_ERROR("Could not read all data from file %s.", data_path);
+        free(tmp_data);
+        return false;
+    }
+
+    data_size_ = count + additional_tokens;
+    current_index_ = count; // Start after the loaded data
+    data_ = (int *)malloc(data_size_ * sizeof(int));
+    backend_->device_malloc((void **)&d_data_, data_size_ * sizeof(int));
+
+    if (!data_)
+    {
+        LOG_ERROR("Could not allocate memory for training data. (final)");
+        free(tmp_data);
+        return false;
+    }
+
+    for (size_t i = 0; i < data_size_; ++i)
+    {
+        data_[i] = (int)tmp_data[i];
+    }
+
+    free(tmp_data);
+
+    LOG_INFO("Loaded %zu tokens from %s", data_size_, data_path);
+    return true;
+}
+
+bool DataManager::save_data(const char *output_path)
 {
     FILE *fp = fopen(output_path, "wb");
 
     if (!fp)
     {
         LOG_ERROR("Could not open file %s for writing.", output_path);
-        return;
+        return false;
     }
 
     uint16_t *tmp_data = (uint16_t *)malloc(current_index_ * sizeof(uint16_t));
@@ -55,7 +109,7 @@ void DataManager::save_data(const char *output_path)
     {
         LOG_ERROR("Could not allocate memory for saving data.");
         fclose(fp);
-        return;
+        return false;
     }
 
     for (size_t i = 0; i < current_index_; ++i)
@@ -70,12 +124,13 @@ void DataManager::save_data(const char *output_path)
     if (count != current_index_)
     {
         LOG_ERROR("Could not write entire tokens file %s.", output_path);
-        return;
+        return false;
     }
 
-    LOG_INFO("Saved tokens to %s successfully.", output_path);
-
     free(tmp_data);
+
+    LOG_INFO("Saved tokens to %s successfully.", output_path);
+    return true;
 }
 
 const int *DataManager::device_data()
@@ -83,59 +138,4 @@ const int *DataManager::device_data()
     backend_->device_memcpy_h2d(d_data_, data_, data_size_ * sizeof(int));
 
     return d_data_;
-}
-
-void DataManager::load_data(const char *data_path, int additional_tokens)
-{
-    FILE *fp = fopen(data_path, "rb");
-
-    if (!fp)
-    {
-        LOG_ERROR("Could not open file %s for reading.", data_path);
-        return;
-    }
-
-    fseek(fp, 0, SEEK_END);
-    size_t size = ftell(fp);
-    size_t count = size / sizeof(uint16_t);
-    fseek(fp, 0, SEEK_SET);
-
-    uint16_t *tmp_data = (uint16_t *)malloc(size);
-
-    if (!tmp_data)
-    {
-        LOG_ERROR("Could not allocate memory for training data.");
-        fclose(fp);
-        return;
-    }
-
-    size_t read_count = fread(tmp_data, sizeof(uint16_t), count, fp);
-    fclose(fp);
-
-    if (read_count != count)
-    {
-        LOG_ERROR("Could not read all data from file %s.", data_path);
-        free(tmp_data);
-        return;
-    }
-
-    data_size_ = count + additional_tokens;
-    current_index_ = count; // Start after the loaded data
-    data_ = (int *)malloc(data_size_ * sizeof(int));
-
-    if (!data_)
-    {
-        LOG_ERROR("Could not allocate memory for training data. (final)");
-        free(tmp_data);
-        return;
-    }
-
-    for (size_t i = 0; i < data_size_; ++i)
-    {
-        data_[i] = (int)tmp_data[i];
-    }
-
-    free(tmp_data);
-    
-    LOG_INFO("Loaded %zu tokens from %s", data_size_, data_path);
 }

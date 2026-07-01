@@ -11,6 +11,7 @@ int main(int argc, char *argv[])
     // Parse command-line arguments
     int epochs = -1;
     int batch_size = 2;
+    int batch_accum_steps = 2;
     char *input_file = nullptr;
     char *output_file = nullptr;
     char *data_file = nullptr;
@@ -25,6 +26,10 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--batch-size") == 0 && i + 1 < argc)
         {
             batch_size = atoi(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--batch-accum-steps") == 0 && i + 1 < argc)
+        {
+            batch_accum_steps = atoi(argv[++i]);
         }
         else if (strcmp(argv[i], "--input") == 0 && i + 1 < argc)
         {
@@ -44,14 +49,14 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (epochs <= 0 || output_file == nullptr || data_file == nullptr)
+    if (epochs <= 0 || batch_size <= 0 || batch_accum_steps <= 0 || output_file == nullptr || data_file == nullptr)
     {
-        LOG_ERROR("Usage: %s --epochs <num_epochs> --batch-size <batch_size> [--input <input_file>] --output <output_file> [--data <data_file>] [--seed <seed>]", argv[0]);
+        LOG_ERROR("Usage: %s --epochs <num_epochs> [--batch-size <batch_size>] [--batch-accum-steps <steps>] [--input <input_file>] --output <output_file> [--data <data_file>] [--seed <seed>]", argv[0]);
         return 1;
     }
 
     // Print configuration
-    LOG_INFO("Training configuration: epochs=%d, batch_size=%d, input_file=%s, output_file=%s, data_file=%s, seed=%lu", epochs, batch_size, (input_file != nullptr) ? input_file : "None", output_file, data_file, seed);
+    LOG_INFO("Training configuration: epochs=%d, batch_size=%d, batch_accum_steps=%d, input_file=%s, output_file=%s, data_file=%s, seed=%lu", epochs, batch_size, batch_accum_steps, (input_file != nullptr) ? input_file : "None", output_file, data_file, seed);
 
     // Prepare config
     gpt_config config;
@@ -71,7 +76,10 @@ int main(int argc, char *argv[])
     // Load checkpoint if provided, otherwise initialize weights
     if (input_file != nullptr)
     {
-        gpt.load_checkpoint(input_file);
+        if (!gpt.load_checkpoint(input_file))
+        {
+            return 1;
+        }
     }
     else
     {
@@ -79,7 +87,13 @@ int main(int argc, char *argv[])
     }
 
     // Prepare data
-    DataLoader loader(backend, data_file, batch_size, config.max_seq_len);
+    DataLoader loader(backend, batch_size, config.max_seq_len);
+    if (!loader.load_data(data_file))
+    {
+        LOG_ERROR("Failed to load data from %s.", data_file);
+        return 1;
+    }
+
     gpt.set_size(batch_size, config.max_seq_len);
 
     // Print memory info
@@ -88,10 +102,9 @@ int main(int argc, char *argv[])
     LOG_INFO("Memory Info: Free: %.2f MB, Total: %.2f MB", free_mem_mb, total_mem_mb);
 
     // Training loop
-    const int accum_steps = 2;
     int micro = 0;
     int global_steps = 0;
-    int total_steps = epochs * loader.total_batches() / accum_steps;
+    int total_steps = epochs * loader.total_batches() / batch_accum_steps;
 
     gpt.zero_grad();
 
@@ -110,14 +123,14 @@ int main(int argc, char *argv[])
             float loss = gpt.loss(label_tokens);
             gpt.backward(input_tokens, label_tokens);
 
-            if (++micro % accum_steps == 0)
+            if (++micro % batch_accum_steps == 0)
             {
                 float lr = get_lr_cosine_decay(global_steps++, 100, total_steps, 1.2e-3f, 1.2e-4f);
 
                 gpt.clip_grad_norm(1.0f);
                 gpt.optimizer_step(lr, 0.9f, 0.999f, 0.1f);
                 gpt.zero_grad();
-                
+
                 LOG_INFO("Epoch %d/%d  |  Batch %d/%d  |  Loss: %.6f", epoch + 1, epochs, loader.current_batch(), loader.total_batches(), loss);
             }
         }
@@ -126,7 +139,11 @@ int main(int argc, char *argv[])
     // Finish training and save checkpoint
     LOG_INFO("Training completed.");
 
-    gpt.save_checkpoint(output_file);
+    if (!gpt.save_checkpoint(output_file))
+    {
+        LOG_ERROR("Failed to save checkpoint.");
+        return 1;
+    }
 
     // Clean up
     delete backend;

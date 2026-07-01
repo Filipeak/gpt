@@ -1,6 +1,7 @@
 #include "gpt.h"
 #include "logger.h"
 #include <cstdlib>
+#include <cmath>
 
 void gpt_config::print() const
 {
@@ -223,7 +224,7 @@ gpt_cache_x_grads::~gpt_cache_x_grads()
     }
 }
 
-GPT::GPT(IGPTBackend *backend, const gpt_config *config, bool use_grad) : backend_(backend), config_(config), use_grad_(use_grad), batch_size_(0), seq_len_(0), current_step_(0), weights_(nullptr), weights_grads_(nullptr), activations_(nullptr), cache_grads_(nullptr), loss_cache_(nullptr), weights_grads_momentum_(nullptr), weights_grads_velocity_(nullptr)
+GPT::GPT(IGPTBackend *backend, const gpt_config *config, bool use_grad) : backend_(backend), config_(config), use_grad_(use_grad)
 {
     config_->print();
 
@@ -321,14 +322,14 @@ void GPT::init(float mean, float stddev)
     LOG_DEBUG("GPT weights initialized with mean=%.6f, stddev=%.6f.", mean, stddev);
 }
 
-void GPT::load_checkpoint(const char *filename)
+bool GPT::load_checkpoint(const char *filename)
 {
     FILE *fp = fopen(filename, "rb");
 
     if (!fp)
     {
         LOG_ERROR("Could not open checkpoint file %s for reading.", filename);
-        return;
+        return false;
     }
 
     float *data = (float *)malloc(weights_->buffer_count_ * sizeof(float));
@@ -337,7 +338,7 @@ void GPT::load_checkpoint(const char *filename)
     {
         LOG_ERROR("Could not allocate memory for checkpoint data.");
         fclose(fp);
-        return;
+        return false;
     }
 
     size_t count = fread(data, sizeof(float), weights_->buffer_count_, fp);
@@ -347,23 +348,24 @@ void GPT::load_checkpoint(const char *filename)
     {
         LOG_ERROR("Could not read entire checkpoint file %s.", filename);
         free(data);
-        return;
+        return false;
     }
 
     backend_->device_memcpy_h2d(weights_->buffer_, data, weights_->buffer_count_ * sizeof(float));
     free(data);
 
     LOG_INFO("Loaded checkpoint from %s successfully (%d floats, %.2f MB).", filename, (int)count, count * sizeof(float) / (1024.0 * 1024.0));
+    return true;
 }
 
-void GPT::save_checkpoint(const char *filename) const
+bool GPT::save_checkpoint(const char *filename) const
 {
     FILE *fp = fopen(filename, "wb");
 
     if (!fp)
     {
         LOG_ERROR("Could not open checkpoint file %s for writing.", filename);
-        return;
+        return false;
     }
 
     float *data = (float *)malloc(weights_->buffer_count_ * sizeof(float));
@@ -372,7 +374,7 @@ void GPT::save_checkpoint(const char *filename) const
     {
         LOG_ERROR("Could not allocate memory for checkpoint data.");
         fclose(fp);
-        return;
+        return false;
     }
 
     backend_->device_memcpy_d2h(data, weights_->buffer_, weights_->buffer_count_ * sizeof(float));
@@ -385,10 +387,11 @@ void GPT::save_checkpoint(const char *filename) const
     if (count != weights_->buffer_count_)
     {
         LOG_ERROR("Could not write entire checkpoint file %s.", filename);
-        return;
+        return false;
     }
 
     LOG_INFO("Saved checkpoint to %s successfully (%d floats, %.2f MB).", filename, (int)count, count * sizeof(float) / (1024.0 * 1024.0));
+    return true;
 }
 
 void GPT::set_size(int batch_size, int seq_len)

@@ -5,26 +5,12 @@
 #include <cstdlib>
 #include <cstring>
 
-DataLoader::DataLoader(IGPTBackend *backend, const char *data_path, int batch_size, int seq_len) : backend_(backend), batch_size_(batch_size), seq_len_(seq_len), data_(nullptr), data_size_(0), samples_count_(0), samples_indices_(nullptr), current_sample_index_(0), tmp_inputs_(nullptr), tmp_labels_(nullptr), d_inputs_(nullptr), d_labels_(nullptr)
+DataLoader::DataLoader(IGPTBackend *backend, int batch_size, int seq_len) : backend_(backend), batch_size_(batch_size), seq_len_(seq_len)
 {
-    load_data(data_path);
-
-    if (data_size_ <= 2 * seq_len_)
-    {
-        LOG_ERROR("Not enough data samples to create even a single batch. Data size: %zu, Sequence length: %d", data_size_, seq_len_);
-        return;
-    }
-
-    samples_count_ = data_size_ / seq_len_ - 1; // -1 because we will add offset at the begining
-    samples_indices_ = (int *)malloc(samples_count_ * sizeof(int));
-
     tmp_inputs_ = (int *)malloc(batch_size_ * seq_len_ * sizeof(int));
     tmp_labels_ = (int *)malloc(batch_size_ * seq_len_ * sizeof(int));
-
     backend_->device_malloc((void **)&d_inputs_, batch_size_ * seq_len_ * sizeof(int));
     backend_->device_malloc((void **)&d_labels_, batch_size_ * seq_len_ * sizeof(int));
-
-    LOG_INFO("Total training batches: %d", total_batches());
 }
 
 DataLoader::~DataLoader()
@@ -66,6 +52,66 @@ DataLoader::~DataLoader()
     }
 }
 
+bool DataLoader::load_data(const char *data_path)
+{
+    FILE *fp = fopen(data_path, "rb");
+
+    if (!fp)
+    {
+        LOG_ERROR("Could not open file %s for reading.", data_path);
+        return false;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    size_t size = ftell(fp);
+    size_t count = size / sizeof(uint16_t);
+    fseek(fp, 0, SEEK_SET);
+
+    uint16_t *tmp_data = (uint16_t *)malloc(size);
+
+    if (!tmp_data)
+    {
+        LOG_ERROR("Could not allocate memory for training data.");
+        fclose(fp);
+        return false;
+    }
+
+    size_t read_count = fread(tmp_data, sizeof(uint16_t), count, fp);
+    fclose(fp);
+
+    if (read_count != count)
+    {
+        LOG_ERROR("Could not read all data from file %s.", data_path);
+        free(tmp_data);
+        return false;
+    }
+
+    data_size_ = count;
+
+    if (data_size_ <= 2 * seq_len_)
+    {
+        LOG_ERROR("Not enough data samples to create even a single batch. Data size: %zu, Sequence length: %d", data_size_, seq_len_);
+        free(tmp_data);
+        return false;
+    }
+
+    data_ = (int *)malloc(data_size_ * sizeof(int));
+
+    for (size_t i = 0; i < data_size_; ++i)
+    {
+        data_[i] = (int)tmp_data[i];
+    }
+
+    samples_count_ = data_size_ / seq_len_ - 1; // -1 because we will add offset at the begining
+    samples_indices_ = (int *)malloc(samples_count_ * sizeof(int));
+
+    free(tmp_data);
+
+    LOG_INFO("Loaded %zu training samples from %s (total batches: %d)", data_size_, data_path, total_batches());
+
+    return true;
+}
+
 void DataLoader::reset_epoch()
 {
     size_t base_offset = rand() % seq_len_; // Random offset to start from within the first sequence length
@@ -94,6 +140,7 @@ bool DataLoader::next_batch()
         return false;
     }
 
+    // Copy sampled indices to temporary input and label arrays
     for (int i = 0; i < batch_size_; i++)
     {
         int sample_index = samples_indices_[current_sample_index_ + i];
@@ -109,58 +156,4 @@ bool DataLoader::next_batch()
     current_sample_index_ += batch_size_;
 
     return true;
-}
-
-void DataLoader::load_data(const char *data_path)
-{
-    FILE *fp = fopen(data_path, "rb");
-
-    if (!fp)
-    {
-        LOG_ERROR("Could not open file %s for reading.", data_path);
-        return;
-    }
-
-    fseek(fp, 0, SEEK_END);
-    size_t size = ftell(fp);
-    size_t count = size / sizeof(uint16_t);
-    fseek(fp, 0, SEEK_SET);
-
-    uint16_t *tmp_data = (uint16_t *)malloc(size);
-
-    if (!tmp_data)
-    {
-        LOG_ERROR("Could not allocate memory for training data.");
-        fclose(fp);
-        return;
-    }
-
-    size_t read_count = fread(tmp_data, sizeof(uint16_t), count, fp);
-    fclose(fp);
-
-    if (read_count != count)
-    {
-        LOG_ERROR("Could not read all data from file %s.", data_path);
-        free(tmp_data);
-        return;
-    }
-
-    data_size_ = count;
-    data_ = (int *)malloc(data_size_ * sizeof(int));
-
-    if (!data_)
-    {
-        LOG_ERROR("Could not allocate memory for training data. (final)");
-        free(tmp_data);
-        return;
-    }
-
-    for (size_t i = 0; i < data_size_; ++i)
-    {
-        data_[i] = (int)tmp_data[i];
-    }
-
-    free(tmp_data);
-    
-    LOG_INFO("Loaded %zu training samples from %s", data_size_, data_path);
 }

@@ -6,8 +6,10 @@
 class DataLoader
 {
 public:
-    DataLoader(IGPTBackend *backend, const char *data_path, int batch_size, int seq_len);
+    DataLoader(IGPTBackend *backend, int batch_size, int seq_len);
     ~DataLoader();
+
+    bool load_data(const char *data_path);
 
     void reset_epoch();
     bool next_batch();
@@ -19,21 +21,19 @@ public:
     int total_batches() const { return samples_count_ / batch_size_; }
 
 private:
-    IGPTBackend *backend_;
-    int batch_size_;
-    int seq_len_;
+    IGPTBackend *backend_ = nullptr;
+    int batch_size_ = 0;
+    int seq_len_ = 0;
 
-    int *data_;
-    size_t data_size_;
+    int *data_ = nullptr;
+    size_t data_size_ = 0;
 
-    int *samples_indices_;
-    size_t samples_count_;
-    size_t current_sample_index_;
+    int *samples_indices_ = nullptr;
+    size_t samples_count_ = 0;
+    size_t current_sample_index_ = 0;
 
-    int *tmp_inputs_;
-    int *tmp_labels_;
-    int *d_inputs_;
-    int *d_labels_;
-
-    void load_data(const char *data_path);
+    int *tmp_inputs_ = nullptr;
+    int *tmp_labels_ = nullptr;
+    int *d_inputs_ = nullptr;
+    int *d_labels_ = nullptr;
 };

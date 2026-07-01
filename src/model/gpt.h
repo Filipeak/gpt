@@ -137,8 +137,8 @@ public:
     ~GPT();
 
     void init(float mean, float stddev);
-    void load_checkpoint(const char *filename);
-    void save_checkpoint(const char *filename) const;
+    bool load_checkpoint(const char *filename);
+    bool save_checkpoint(const char *filename) const;
 
     void set_size(int batch_size, int seq_len);
 
@@ -153,19 +153,19 @@ public:
     const gpt_activations *activations() const { return activations_; }
 
 private:
-    IGPTBackend *backend_;
-    const gpt_config *config_;
+    IGPTBackend *backend_ = nullptr;
+    const gpt_config *config_ = nullptr;
 
-    bool use_grad_;
-    int batch_size_;
-    int seq_len_;
-    int current_step_;
+    bool use_grad_ = false;
+    int batch_size_ = 0;
+    int seq_len_ = 0;
+    int current_step_ = 0;
 
-    float *loss_cache_;
-    gpt_weights *weights_;
-    gpt_activations *activations_;
-    gpt_weights *weights_grads_;
-    gpt_cache_x_grads *cache_grads_;
-    gpt_weights *weights_grads_momentum_;
-    gpt_weights *weights_grads_velocity_;
+    float *loss_cache_ = nullptr;
+    gpt_weights *weights_ = nullptr;
+    gpt_activations *activations_ = nullptr;
+    gpt_weights *weights_grads_ = nullptr;
+    gpt_cache_x_grads *cache_grads_ = nullptr;
+    gpt_weights *weights_grads_momentum_ = nullptr;
+    gpt_weights *weights_grads_velocity_ = nullptr;
 };
