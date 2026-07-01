@@ -2,13 +2,6 @@
 #include <cstdlib>
 #include <cmath>
 
-struct Candidate
-{
-    int id;
-    float logit;
-    float prob;
-};
-
 static int compare_desc(const void *a, const void *b)
 {
     const Candidate *x = (const Candidate *)a;
@@ -28,90 +21,97 @@ static int compare_desc(const void *a, const void *b)
     }
 }
 
-int sample_token(float *logits, int vocab_size, float temperature, int top_k, float top_p)
+TokenSampler::TokenSampler(int vocab_size, float temperature, int top_k, float top_p) : vocab_size_(vocab_size), temperature_(temperature), top_k_(top_k), top_p_(top_p)
 {
-    Candidate *cand = (Candidate *)malloc(sizeof(Candidate) * vocab_size);
+    candidates_ = (Candidate *)malloc(sizeof(Candidate) * vocab_size_);
+}
 
+TokenSampler::~TokenSampler()
+{
+    free(candidates_);
+}
+
+int TokenSampler::sample(float *new_logits)
+{
     // Apply temperature scaling
-    for (int i = 0; i < vocab_size; i++)
+    for (int i = 0; i < vocab_size_; i++)
     {
-        cand[i].id = i;
-        cand[i].logit = logits[i] / temperature;
+        candidates_[i].id = i;
+        candidates_[i].logit = new_logits[i] / temperature_;
     }
 
     // Sort candidates by logit in descending order
-    qsort(cand, vocab_size, sizeof(Candidate), compare_desc);
+    qsort(candidates_, vocab_size_, sizeof(Candidate), compare_desc);
 
-    if (top_k > 0 && top_k < vocab_size)
+    int temp_size = vocab_size_;
+
+    if (top_k_ > 0 && top_k_ < vocab_size_)
     {
-        vocab_size = top_k;
+        temp_size = top_k_;
     }
 
     // Softmax
-    float max_logit = cand[0].logit;
+    float max_logit = candidates_[0].logit;
     float sum_exp = 0.0f;
 
-    for (int i = 0; i < vocab_size; i++)
+    for (int i = 0; i < temp_size; i++)
     {
-        cand[i].prob = expf(cand[i].logit - max_logit);
-        sum_exp += cand[i].prob;
+        candidates_[i].prob = expf(candidates_[i].logit - max_logit);
+        sum_exp += candidates_[i].prob;
     }
 
-    for (int i = 0; i < vocab_size; i++)
+    for (int i = 0; i < temp_size; i++)
     {
-        cand[i].prob /= sum_exp;
+        candidates_[i].prob /= sum_exp;
     }
 
     // Apply top-p filtering
-    if (top_p > 0.0f && top_p < 1.0f)
+    if (top_p_ > 0.0f && top_p_ < 1.0f)
     {
         float cumulative_prob = 0.0f;
         int new_vocab_size = 0;
 
-        for (int i = 0; i < vocab_size; i++)
+        for (int i = 0; i < temp_size; i++)
         {
-            cumulative_prob += cand[i].prob;
+            cumulative_prob += candidates_[i].prob;
             new_vocab_size++;
 
-            if (cumulative_prob >= top_p)
+            if (cumulative_prob >= top_p_)
             {
                 break;
             }
         }
 
-        vocab_size = new_vocab_size;
+        temp_size = new_vocab_size;
 
         float sum = 0.0f;
 
-        for (int i = 0; i < vocab_size; i++)
+        for (int i = 0; i < temp_size; i++)
         {
-            sum += cand[i].prob;
+            sum += candidates_[i].prob;
         }
 
-        for (int i = 0; i < vocab_size; i++)
+        for (int i = 0; i < temp_size; i++)
         {
-            cand[i].prob /= sum;
+            candidates_[i].prob /= sum;
         }
     }
 
     // Sample a token based on the filtered probabilities
     float r = (float)(rand()) / (float)RAND_MAX;
     float cumulative = 0.0f;
-    int token = cand[vocab_size - 1].id; // Default to the last token in case of rounding errors
+    int token = candidates_[temp_size - 1].id; // Default to the last token in case of rounding errors
 
-    for (int i = 0; i < vocab_size; i++)
+    for (int i = 0; i < temp_size; i++)
     {
-        cumulative += cand[i].prob;
+        cumulative += candidates_[i].prob;
 
         if (r <= cumulative)
         {
-            token = cand[i].id;
+            token = candidates_[i].id;
             break;
         }
     }
-
-    // Free the allocated memory for candidates and return the sampled token
-    free(cand);
 
     return token;
 }

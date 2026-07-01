@@ -88,6 +88,7 @@ int main(int argc, char *argv[])
 
     // Prepare data
     DataManager data_manager(backend);
+    TokenSampler sampler(config.vocab_size, temperature, top_k, top_p);
 
     if (!data_manager.load_data(input_file, max_tokens))
     {
@@ -95,7 +96,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    float *new_token_logits = (float *)malloc(config.vocab_size * sizeof(float));
+    float *new_token_logits_cpu = (float *)malloc(config.vocab_size * sizeof(float));
 
     // Prepare stats
     float ttf_ms = 0.0f; // Time to first token
@@ -115,11 +116,11 @@ int main(int argc, char *argv[])
 
         BENCHMARK_SCOPE_PRINT(ForwardPass, {
             gpt.forward(data_manager.device_data());
-            backend->device_memcpy_d2h(new_token_logits, gpt.activations()->logits + (current_size - 1) * config.vocab_size, config.vocab_size * sizeof(float)); // Copy last token logits to host
+            backend->device_memcpy_d2h(new_token_logits_cpu, gpt.activations()->logits + (current_size - 1) * config.vocab_size, config.vocab_size * sizeof(float)); // Copy last token logits to host
         });
 
         BENCHMARK_SCOPE_PRINT(Sample, {
-            data_manager.push_token(sample_token(new_token_logits, config.vocab_size, temperature, top_k, top_p));
+            data_manager.push_token(sampler.sample(new_token_logits_cpu));
         })
 
         if (i == 0)
@@ -150,7 +151,7 @@ int main(int argc, char *argv[])
 
     // Clean up
     delete backend;
-    free(new_token_logits);
+    free(new_token_logits_cpu);
 
     return 0;
 }
