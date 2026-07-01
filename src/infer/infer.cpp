@@ -3,7 +3,7 @@
 #include "data_manager.h"
 #include "token_sampler.h"
 #include "logger.h"
-#include <chrono>
+#include "benchmark.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -97,30 +97,49 @@ int main(int argc, char *argv[])
 
     float *new_token_logits = (float *)malloc(config.vocab_size * sizeof(float));
 
-    // Measure time
-    auto start_time = std::chrono::high_resolution_clock::now();
+    // Prepare stats
+    float ttf_ms = 0.0f; // Time to first token
+    float avg_forward_time_ms = 0.0f;
+    float avg_sample_time_ms = 0.0f;
 
     // Generate tokens
+    LOG_INFO("----------------------");
+
     for (int i = 0; i < max_tokens; ++i)
     {
         int current_size = data_manager.current_size();
 
-        gpt.set_size(1, current_size);
-        gpt.forward(data_manager.device_data());
+        BENCHMARK_SCOPE_PRINT(Preparation, {
+            gpt.set_size(1, current_size);
+        });
 
-        const float *logits = gpt.activations()->logits;
-        backend->device_memcpy_d2h(new_token_logits, logits + (current_size - 1) * config.vocab_size, config.vocab_size * sizeof(float)); // Copy last token logits to host
+        BENCHMARK_SCOPE_PRINT(ForwardPass, {
+            gpt.forward(data_manager.device_data());
+            backend->device_memcpy_d2h(new_token_logits, gpt.activations()->logits + (current_size - 1) * config.vocab_size, config.vocab_size * sizeof(float)); // Copy last token logits to host
+        });
 
-        int next_token = sample_token(new_token_logits, config.vocab_size, temperature, top_k, top_p);
+        BENCHMARK_SCOPE_PRINT(Sample, {
+            data_manager.push_token(sample_token(new_token_logits, config.vocab_size, temperature, top_k, top_p));
+        })
 
-        LOG_DEBUG("Generated token %d/%d: %d", i + 1, max_tokens, next_token);
+        if (i == 0)
+        {
+            ttf_ms = elapsed_ForwardPass + elapsed_Sample;
+        }
 
-        data_manager.push_token(next_token);
+        avg_forward_time_ms += elapsed_ForwardPass;
+        avg_sample_time_ms += elapsed_Sample;
+
+        LOG_INFO("----------------------");
     }
 
-    // Measure time
-    auto end_time = std::chrono::high_resolution_clock::now();
-    LOG_INFO("Generated %d tokens in %.2f seconds. (%.2f tokens/second)", max_tokens, std::chrono::duration<double>(end_time - start_time).count(), (double)max_tokens / std::chrono::duration<double>(end_time - start_time).count());
+    // Print average times
+    avg_forward_time_ms /= max_tokens;
+    avg_sample_time_ms /= max_tokens;
+
+    LOG_INFO("Time to first token: %.2f ms", ttf_ms);
+    LOG_INFO("Average forward pass time: %.2f ms (%.2f tokens/second)", avg_forward_time_ms, 1000.0f / avg_forward_time_ms);
+    LOG_INFO("Average sampling time: %.2f ms (%.2f tokens/second)", avg_sample_time_ms, 1000.0f / avg_sample_time_ms);
 
     // Save generated tokens to output file
     if (!data_manager.save_data(output_file))

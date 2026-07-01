@@ -3,6 +3,7 @@
 #include "data_loader.h"
 #include "lr_scheduling.h"
 #include "logger.h"
+#include "benchmark.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -106,6 +107,10 @@ int main(int argc, char *argv[])
     int global_steps = 0;
     int total_steps = epochs * loader.total_batches() / batch_accum_steps;
 
+    float running_training_step_time_ms = 0.0f;
+    float running_loss = 0.0f;
+    int running_count = 0;
+
     gpt.zero_grad();
 
     LOG_INFO("Starting training loop for %d epochs...", epochs);
@@ -119,9 +124,15 @@ int main(int argc, char *argv[])
             const int *input_tokens = loader.inputs();
             const int *label_tokens = loader.labels();
 
-            gpt.forward(input_tokens);
-            float loss = gpt.loss(label_tokens);
-            gpt.backward(input_tokens, label_tokens);
+            BENCHMARK_SCOPE(TrainingStep, {
+                gpt.forward(input_tokens);
+                float loss = gpt.loss(label_tokens);
+                running_loss += loss;
+                gpt.backward(input_tokens, label_tokens);
+            });
+
+            running_training_step_time_ms += elapsed_TrainingStep;
+            running_count++;
 
             if (++micro % batch_accum_steps == 0)
             {
@@ -131,7 +142,11 @@ int main(int argc, char *argv[])
                 gpt.optimizer_step(lr, 0.9f, 0.999f, 0.1f);
                 gpt.zero_grad();
 
-                LOG_INFO("Epoch %d/%d  |  Batch %d/%d  |  Loss: %.6f", epoch + 1, epochs, loader.current_batch(), loader.total_batches(), loss);
+                LOG_INFO("Epoch %d/%d  |  Batch %d/%d  |  Avg Loss: %.6f  |  Avg Time: %.2f ms", epoch + 1, epochs, loader.current_batch(), loader.total_batches(), running_loss / running_count, running_training_step_time_ms / running_count);
+
+                running_training_step_time_ms = 0.0f;
+                running_loss = 0.0f;
+                running_count = 0;
             }
         }
     }
