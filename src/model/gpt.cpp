@@ -514,8 +514,11 @@ void GPT::forward(const int *input_tokens)
     backend_->device_unembedding_forward(activations_->logits, input, weights_->wte, batch_size_, seq_len_, config_->d_model, config_->vocab_size);
     input = activations_->logits;
 
-    // Softmax to probabilities
-    backend_->device_softmax_forward(activations_->probs, input, batch_size_, seq_len_, config_->vocab_size);
+    // Softmax to probabilities (only if use_grad_ is true, otherwise skip to save computation)
+    if (use_grad_)
+    {
+        backend_->device_softmax_forward(activations_->probs, input, batch_size_, seq_len_, config_->vocab_size);
+    }
 }
 
 void GPT::backward(const int *input_tokens, const int *label_tokens)
@@ -698,6 +701,12 @@ void GPT::zero_grad()
 
 float GPT::loss(const int *label_tokens)
 {
+    if (!use_grad_)
+    {
+        LOG_ERROR("loss() called but use_grad is false.");
+        return -1.0f;
+    }
+
     if (!activations_)
     {
         LOG_ERROR("activations not allocated. Call set_size() and forward() before loss().");
