@@ -2,7 +2,7 @@
 #include "cuda_backend.h"
 #include "data_loader.h"
 #include "lr_scheduling.h"
-#include <cstdio>
+#include "logger.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -46,18 +46,12 @@ int main(int argc, char *argv[])
 
     if (epochs <= 0 || output_file == nullptr || data_file == nullptr)
     {
-        printf("Usage: %s --epochs <num_epochs> --batch-size <batch_size> [--input <input_file>] --output <output_file> [--data <data_file>] [--seed <seed>]\n", argv[0]);
+        LOG_ERROR("Usage: %s --epochs <num_epochs> --batch-size <batch_size> [--input <input_file>] --output <output_file> [--data <data_file>] [--seed <seed>]", argv[0]);
         return 1;
     }
 
     // Print configuration
-    printf("Training configuration:\n");
-    printf("- Epochs: %d\n", epochs);
-    printf("- Batch size: %d\n", batch_size);
-    printf("- Input checkpoint: %s\n", (input_file != nullptr) ? input_file : "None");
-    printf("- Output checkpoint: %s\n", output_file);
-    printf("- Data file: %s\n", data_file);
-    printf("- Seed: %lu\n", seed);
+    LOG_INFO("Training configuration: epochs=%d, batch_size=%d, input_file=%s, output_file=%s, data_file=%s, seed=%lu", epochs, batch_size, (input_file != nullptr) ? input_file : "None", output_file, data_file, seed);
 
     // Prepare config
     gpt_config config;
@@ -91,7 +85,7 @@ int main(int argc, char *argv[])
     // Print memory info
     float free_mem_mb, total_mem_mb;
     backend->device_get_memory_info(&free_mem_mb, &total_mem_mb);
-    printf("Memory Info: Free: %.2f MB, Total: %.2f MB\n", free_mem_mb, total_mem_mb);
+    LOG_INFO("Memory Info: Free: %.2f MB, Total: %.2f MB", free_mem_mb, total_mem_mb);
 
     // Training loop
     const int accum_steps = 2;
@@ -101,7 +95,7 @@ int main(int argc, char *argv[])
 
     gpt.zero_grad();
 
-    printf("Starting training loop for %d epochs...\n", epochs);
+    LOG_INFO("Starting training loop for %d epochs...", epochs);
 
     for (int epoch = 0; epoch < epochs; epoch++)
     {
@@ -124,13 +118,13 @@ int main(int argc, char *argv[])
                 gpt.optimizer_step(lr, 0.9f, 0.999f, 0.1f);
                 gpt.zero_grad();
                 
-                printf("Epoch %d/%d  |  Batch %d/%d  |  Loss: %.6f\n", epoch + 1, epochs, loader.current_batch(), loader.total_batches(), loss);
+                LOG_INFO("Epoch %d/%d  |  Batch %d/%d  |  Loss: %.6f", epoch + 1, epochs, loader.current_batch(), loader.total_batches(), loss);
             }
         }
     }
 
     // Finish training and save checkpoint
-    printf("Training completed.\n");
+    LOG_INFO("Training completed.");
 
     gpt.save_checkpoint(output_file);
 

@@ -1,16 +1,10 @@
 #include "gpt.h"
-#include <cstdio>
+#include "logger.h"
 #include <cstdlib>
 
 void gpt_config::print() const
 {
-    printf("GPT Configuration:\n");
-    printf("- max_seq_len=%d\n", this->max_seq_len);
-    printf("- vocab_size=%d\n", this->vocab_size);
-    printf("- num_layers=%d\n", this->num_layers);
-    printf("- num_heads=%d\n", this->num_heads);
-    printf("- d_model=%d\n", this->d_model);
-    printf("- d_ffn=%d\n", this->d_ffn);
+    LOG_INFO("GPT Configuration: max_seq_len=%d, vocab_size=%d, num_layers=%d, num_heads=%d, d_model=%d, d_ffn=%d", max_seq_len, vocab_size, num_layers, num_heads, d_model, d_ffn);
 }
 
 static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[], size_t *sizes, size_t num_tensors, size_t *total_size_out)
@@ -85,7 +79,7 @@ gpt_weights::gpt_weights(IGPTBackend *backend, const gpt_config *config) : backe
 
     buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_WEIGHTS_PARAMS_COUNT, &buffer_count_);
 
-    printf("Allocated GPT weights buffer of size %zu floats (%.2f MB).\n", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0));
+    LOG_DEBUG("Allocated GPT weights buffer of size %zu floats (%.2f MB).", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0));
 }
 
 gpt_weights::~gpt_weights()
@@ -95,7 +89,7 @@ gpt_weights::~gpt_weights()
         backend_->device_free(buffer_);
         buffer_ = nullptr;
 
-        printf("GPT weights buffer freed. (count: %zu)\n", buffer_count_);
+        LOG_DEBUG("GPT weights buffer freed. (count: %zu)", buffer_count_);
 
         buffer_count_ = 0;
     }
@@ -156,7 +150,7 @@ gpt_activations::gpt_activations(IGPTBackend *backend, const gpt_config *config,
 
     buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_ACTIVATIONS_COUNT, &buffer_count_);
 
-    printf("Allocated GPT activations buffer of size %zu floats (%.2f MB) for batch size %d and sequence length %d.\n", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0), batch_size, seq_len);
+    LOG_DEBUG("Allocated GPT activations buffer of size %zu floats (%.2f MB) for batch size %d and sequence length %d.", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0), batch_size, seq_len);
 }
 
 gpt_activations::~gpt_activations()
@@ -166,7 +160,7 @@ gpt_activations::~gpt_activations()
         backend_->device_free(buffer_);
         buffer_ = nullptr;
 
-        printf("GPT activations buffer freed. (count: %zu)\n", buffer_count_);
+        LOG_DEBUG("GPT activations buffer freed. (count: %zu)", buffer_count_);
 
         buffer_count_ = 0;
     }
@@ -213,7 +207,7 @@ gpt_cache_x_grads::gpt_cache_x_grads(IGPTBackend *backend, const gpt_config *con
 
     buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_CACHE_X_GRADS_COUNT, &buffer_count_);
 
-    printf("Allocated GPT cache_x_grads buffer of size %zu floats (%.2f MB) for batch size %d and sequence length %d.\n", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0), batch_size, seq_len);
+    LOG_DEBUG("Allocated GPT cache_x_grads buffer of size %zu floats (%.2f MB) for batch size %d and sequence length %d.", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0), batch_size, seq_len);
 }
 
 gpt_cache_x_grads::~gpt_cache_x_grads()
@@ -223,7 +217,7 @@ gpt_cache_x_grads::~gpt_cache_x_grads()
         backend_->device_free(buffer_);
         buffer_ = nullptr;
 
-        printf("GPT cache_x_grads buffer freed. (count: %zu)\n", buffer_count_);
+        LOG_DEBUG("GPT cache_x_grads buffer freed. (count: %zu)", buffer_count_);
 
         buffer_count_ = 0;
     }
@@ -247,7 +241,7 @@ GPT::GPT(IGPTBackend *backend, const gpt_config *config, bool use_grad) : backen
 
     backend_->device_malloc((void **)&loss_cache_, sizeof(float));
 
-    printf("GPT model created with use_grad=%d.\n", use_grad_);
+    LOG_INFO("GPT model created with use_grad=%d.", use_grad_);
 }
 
 GPT::~GPT()
@@ -294,7 +288,7 @@ GPT::~GPT()
         weights_grads_velocity_ = nullptr;
     }
 
-    printf("GPT model destroyed.\n");
+    LOG_INFO("GPT model destroyed.");
 }
 
 void GPT::init(float mean, float stddev)
@@ -324,7 +318,7 @@ void GPT::init(float mean, float stddev)
     backend_->device_memset(weights_->ffn_up_b, 0, L * F * sizeof(float));
     backend_->device_memset(weights_->ffn_down_b, 0, L * D * sizeof(float));
 
-    printf("GPT weights initialized with mean=%.6f, stddev=%.6f.\n", mean, stddev);
+    LOG_DEBUG("GPT weights initialized with mean=%.6f, stddev=%.6f.", mean, stddev);
 }
 
 void GPT::load_checkpoint(const char *filename)
@@ -333,7 +327,7 @@ void GPT::load_checkpoint(const char *filename)
 
     if (!fp)
     {
-        printf("Error: Could not open checkpoint file %s for reading.\n", filename);
+        LOG_ERROR("Could not open checkpoint file %s for reading.", filename);
         return;
     }
 
@@ -341,8 +335,8 @@ void GPT::load_checkpoint(const char *filename)
 
     if (!data)
     {
+        LOG_ERROR("Could not allocate memory for checkpoint data.");
         fclose(fp);
-        printf("Error: Could not allocate memory for checkpoint data.\n");
         return;
     }
 
@@ -351,7 +345,7 @@ void GPT::load_checkpoint(const char *filename)
 
     if (count != weights_->buffer_count_)
     {
-        printf("Error: Could not read entire checkpoint file %s.\n", filename);
+        LOG_ERROR("Could not read entire checkpoint file %s.", filename);
         free(data);
         return;
     }
@@ -359,7 +353,7 @@ void GPT::load_checkpoint(const char *filename)
     backend_->device_memcpy_h2d(weights_->buffer_, data, weights_->buffer_count_ * sizeof(float));
     free(data);
 
-    printf("Loaded checkpoint from %s successfully (%d floats).\n", filename, (int)count);
+    LOG_INFO("Loaded checkpoint from %s successfully (%d floats, %.2f MB).", filename, (int)count, count * sizeof(float) / (1024.0 * 1024.0));
 }
 
 void GPT::save_checkpoint(const char *filename) const
@@ -368,7 +362,7 @@ void GPT::save_checkpoint(const char *filename) const
 
     if (!fp)
     {
-        printf("Error: Could not open checkpoint file %s for writing.\n", filename);
+        LOG_ERROR("Could not open checkpoint file %s for writing.", filename);
         return;
     }
 
@@ -376,8 +370,8 @@ void GPT::save_checkpoint(const char *filename) const
 
     if (!data)
     {
+        LOG_ERROR("Could not allocate memory for checkpoint data.");
         fclose(fp);
-        printf("Error: Could not allocate memory for checkpoint data.\n");
         return;
     }
 
@@ -390,11 +384,11 @@ void GPT::save_checkpoint(const char *filename) const
 
     if (count != weights_->buffer_count_)
     {
-        printf("Error: Could not write entire checkpoint file %s.\n", filename);
+        LOG_ERROR("Could not write entire checkpoint file %s.", filename);
         return;
     }
 
-    printf("Saved checkpoint to %s successfully (%d floats, %.2f MB).\n", filename, (int)count, count * sizeof(float) / (1024.0 * 1024.0));
+    LOG_INFO("Saved checkpoint to %s successfully (%d floats, %.2f MB).", filename, (int)count, count * sizeof(float) / (1024.0 * 1024.0));
 }
 
 void GPT::set_size(int batch_size, int seq_len)
@@ -421,14 +415,14 @@ void GPT::set_size(int batch_size, int seq_len)
         cache_grads_ = new gpt_cache_x_grads(backend_, config_, batch_size_, seq_len_);
     }
 
-    printf("GPT model size set to batch_size=%d, seq_len=%d.\n", batch_size_, seq_len_);
+    LOG_DEBUG("GPT model size set to batch_size=%d, seq_len=%d.", batch_size_, seq_len_);
 }
 
 void GPT::forward(const int *input_tokens)
 {
     if (!activations_)
     {
-        printf("Error: activations not allocated. Call set_size() before forward().\n");
+        LOG_ERROR("activations not allocated. Call set_size() before forward().");
         return;
     }
 
@@ -525,13 +519,13 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
 {
     if (!use_grad_)
     {
-        printf("Error: Backward pass called but use_grad is false.\n");
+        LOG_ERROR("Backward pass called but use_grad is false.");
         return;
     }
 
     if (!activations_ || !cache_grads_)
     {
-        printf("Error: activations or cache_x_grads not allocated. Call set_size() before backward().\n");
+        LOG_ERROR("activations or cache_x_grads not allocated. Call set_size() before backward().");
         return;
     }
 
@@ -660,7 +654,7 @@ void GPT::optimizer_step(float learning_rate, float beta1, float beta2, float de
 {
     if (!use_grad_)
     {
-        printf("Error: optimizer_step called but use_grad is false.\n");
+        LOG_ERROR("optimizer_step called but use_grad is false.");
         return;
     }
 
@@ -703,7 +697,7 @@ float GPT::loss(const int *label_tokens)
 {
     if (!activations_)
     {
-        printf("Error: activations not allocated. Call set_size() and forward() before loss().\n");
+        LOG_ERROR("activations not allocated. Call set_size() and forward() before loss().");
         return -1.0f;
     }
 

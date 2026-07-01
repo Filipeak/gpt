@@ -1,6 +1,7 @@
 #include "gpt.h"
 #include "cpu_backend.h"
 #include "cuda_backend.h"
+#include "logger.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -30,6 +31,7 @@ static int file_exists(const char *path)
 static int compare_tensor(const char *name, const float *a, const float *b, size_t size, float eps)
 {
     float max_diff = 0.0f;
+    float max_a = 0.0f;
     size_t max_idx = 0;
     size_t num_bad = 0;
 
@@ -40,6 +42,7 @@ static int compare_tensor(const char *name, const float *a, const float *b, size
         if (diff > max_diff)
         {
             max_diff = diff;
+            max_a = fabsf(a[i]);
             max_idx = i;
         }
         if (diff > eps)
@@ -48,13 +51,15 @@ static int compare_tensor(const char *name, const float *a, const float *b, size
         }
     }
 
+    float rel_diff = max_a > 0.0f ? max_diff / max_a : 0.0f;
+
     if (num_bad == 0)
     {
-        printf("[ PASS ] %-14s size=%-9zu max_diff=%.3e\n", name, size, max_diff);
+        LOG_INFO("[ PASS ] %-14s size=%-9zu max_diff=%-14.3e rel_diff=%.3f%%", name, size, max_diff, rel_diff * 100.0f);
         return 1;
     }
 
-    printf("[ FAIL ] %-14s size=%-9zu max_diff=%.3e at i=%zu (cpu=%.6f cuda=%.6f), %zu/%zu over eps\n", name, size, max_diff, max_idx, a[max_idx], b[max_idx], num_bad, size);
+    LOG_ERROR("[ FAIL ] %-14s size=%-9zu max_diff=%-14.3e rel_diff=%.3f%% at i=%zu (cpu=%.6f cuda=%.6f), %zu/%zu over eps", name, size, max_diff, rel_diff * 100.0f, max_idx, a[max_idx], b[max_idx], num_bad, size);
     return 0;
 }
 
@@ -153,7 +158,7 @@ int main()
     const int batch_size = 1;
     const int context = config.max_seq_len;
 
-    printf("> GPT full forward/backward CPU-vs-CUDA test start\n");
+    LOG_INFO("GPT full forward/backward CPU-vs-CUDA test start");
 
     // Dummy tokens: random list of size context + 1.
     // input = tokens[0:context], labels = tokens[1:context+1].
@@ -166,13 +171,16 @@ int main()
         tokens[i] = rand() % config.vocab_size;
     }
 
+    LOG_INFO("Running CPU model for reference gradients...");
+
     CPUBackend cpu_backend;
     GPT cpu_model(&cpu_backend, &config, true);
 
     // Create the checkpoint if it does not exist yet.
     if (!file_exists(CHECKPOINT_FILE))
     {
-        printf("Checkpoint %s not found, creating dummy model.\n", CHECKPOINT_FILE);
+        LOG_INFO("Checkpoint %s not found, creating dummy model.", CHECKPOINT_FILE);
+
         cpu_model.init(0.0f, 0.02f);
         cpu_model.save_checkpoint(CHECKPOINT_FILE);
     }
@@ -188,10 +196,11 @@ int main()
 
     cpu_backend.device_free(cpu_input);
 
-    printf("> CPU weight gradients downloaded.\n"
-           "> Now running CUDA model for comparison...\n");
+    LOG_INFO("CPU weight gradients downloaded.");
 
     // Now run the same model on CUDA and compare the gradients.
+    LOG_INFO("Running CUDA model for comparison...");
+
     CUDABackend cuda_backend;
     GPT cuda_model(&cuda_backend, &config, true);
     cuda_model.load_checkpoint(CHECKPOINT_FILE);
@@ -205,16 +214,16 @@ int main()
 
     cuda_backend.device_free(cuda_input);
 
-    printf("> CUDA weight gradients downloaded.\n"
-           "> Now comparing gradients...\n");
+    LOG_INFO("CUDA weight gradients downloaded.");
 
-    printf("-- weight gradient comparison (eps=%.1e) --\n", EPSILON);
+    LOG_INFO("Comparing gradients...");
+    LOG_INFO("-- weight gradient comparison (eps=%.1e) --", EPSILON);
 
     int failed = 0;
 
     if (cpu_count != cuda_count)
     {
-        printf("Error: gradient buffer size mismatch (cpu=%zu, cuda=%zu)\n", cpu_count, cuda_count);
+        LOG_ERROR("gradient buffer size mismatch (cpu=%zu, cuda=%zu)", cpu_count, cuda_count);
         failed = 1;
     }
     else
@@ -239,14 +248,14 @@ int main()
             offset += table[i].size;
         }
 
-        printf("--- %d passed, %d failed ---\n", passed, failed);
+        LOG_INFO("--- %d passed, %d failed ---", passed, failed);
     }
 
     free(cpu_grads);
     free(cuda_grads);
     free(tokens);
 
-    printf("> GPT full forward/backward CPU-vs-CUDA test finished.\n");
+    LOG_INFO("GPT full forward/backward CPU-vs-CUDA test finished.");
 
     return failed == 0 ? 0 : 1;
 }

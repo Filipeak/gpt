@@ -1,4 +1,5 @@
 #include "data_loader.h"
+#include "logger.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -10,7 +11,7 @@ DataLoader::DataLoader(IGPTBackend *backend, const char *data_path, int batch_si
 
     if (data_size_ <= 2 * seq_len_)
     {
-        printf("Error: Not enough data samples to create even a single batch. Data size: %zu, Sequence length: %d\n", data_size_, seq_len_);
+        LOG_ERROR("Not enough data samples to create even a single batch. Data size: %zu, Sequence length: %d", data_size_, seq_len_);
         return;
     }
 
@@ -23,7 +24,7 @@ DataLoader::DataLoader(IGPTBackend *backend, const char *data_path, int batch_si
     backend_->device_malloc((void **)&d_inputs_, batch_size_ * seq_len_ * sizeof(int));
     backend_->device_malloc((void **)&d_labels_, batch_size_ * seq_len_ * sizeof(int));
 
-    printf("Total training batches: %d\n", total_batches());
+    LOG_INFO("Total training batches: %d", total_batches());
 }
 
 DataLoader::~DataLoader()
@@ -116,7 +117,7 @@ void DataLoader::load_data(const char *data_path)
 
     if (!fp)
     {
-        printf("Error: Could not open file %s for reading.\n", data_path);
+        LOG_ERROR("Could not open file %s for reading.", data_path);
         return;
     }
 
@@ -129,8 +130,8 @@ void DataLoader::load_data(const char *data_path)
 
     if (!tmp_data)
     {
+        LOG_ERROR("Could not allocate memory for training data.");
         fclose(fp);
-        printf("Error: Could not allocate memory for training data.\n");
         return;
     }
 
@@ -139,8 +140,8 @@ void DataLoader::load_data(const char *data_path)
 
     if (read_count != count)
     {
+        LOG_ERROR("Could not read all data from file %s.", data_path);
         free(tmp_data);
-        printf("Error: Could not read all data from file %s.\n", data_path);
         return;
     }
 
@@ -149,8 +150,8 @@ void DataLoader::load_data(const char *data_path)
 
     if (!data_)
     {
+        LOG_ERROR("Could not allocate memory for training data. (final)");
         free(tmp_data);
-        printf("Error: Could not allocate memory for training data. (final)\n");
         return;
     }
 
@@ -160,5 +161,6 @@ void DataLoader::load_data(const char *data_path)
     }
 
     free(tmp_data);
-    printf("Loaded %zu training samples from %s\n", data_size_, data_path);
+    
+    LOG_INFO("Loaded %zu training samples from %s", data_size_, data_path);
 }

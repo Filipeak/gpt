@@ -1,4 +1,5 @@
 #include "data_manager.h"
+#include "logger.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -34,7 +35,7 @@ void DataManager::push_token(int token)
     }
     else
     {
-        printf("Error: DataManager buffer overflow. Cannot push more tokens.\n");
+        LOG_ERROR("DataManager buffer overflow. Cannot push more tokens.");
     }
 }
 
@@ -44,7 +45,7 @@ void DataManager::save_data(const char *output_path)
 
     if (!fp)
     {
-        printf("Error: Could not open file %s for writing.\n", output_path);
+        LOG_ERROR("Could not open file %s for writing.", output_path);
         return;
     }
 
@@ -52,8 +53,8 @@ void DataManager::save_data(const char *output_path)
 
     if (!tmp_data)
     {
+        LOG_ERROR("Could not allocate memory for saving data.");
         fclose(fp);
-        printf("Error: Could not allocate memory for saving data.\n");
         return;
     }
 
@@ -68,11 +69,11 @@ void DataManager::save_data(const char *output_path)
 
     if (count != current_index_)
     {
-        printf("Error: Could not write entire tokens file %s.\n", output_path);
+        LOG_ERROR("Could not write entire tokens file %s.", output_path);
         return;
     }
 
-    printf("Saved tokens to %s successfully.\n", output_path);
+    LOG_INFO("Saved tokens to %s successfully.", output_path);
 
     free(tmp_data);
 }
@@ -90,7 +91,7 @@ void DataManager::load_data(const char *data_path, int additional_tokens)
 
     if (!fp)
     {
-        printf("Error: Could not open file %s for reading.\n", data_path);
+        LOG_ERROR("Could not open file %s for reading.", data_path);
         return;
     }
 
@@ -103,8 +104,8 @@ void DataManager::load_data(const char *data_path, int additional_tokens)
 
     if (!tmp_data)
     {
+        LOG_ERROR("Could not allocate memory for training data.");
         fclose(fp);
-        printf("Error: Could not allocate memory for training data.\n");
         return;
     }
 
@@ -113,8 +114,8 @@ void DataManager::load_data(const char *data_path, int additional_tokens)
 
     if (read_count != count)
     {
+        LOG_ERROR("Could not read all data from file %s.", data_path);
         free(tmp_data);
-        printf("Error: Could not read all data from file %s.\n", data_path);
         return;
     }
 
@@ -124,8 +125,8 @@ void DataManager::load_data(const char *data_path, int additional_tokens)
 
     if (!data_)
     {
+        LOG_ERROR("Could not allocate memory for training data. (final)");
         free(tmp_data);
-        printf("Error: Could not allocate memory for training data. (final)\n");
         return;
     }
 
@@ -135,5 +136,6 @@ void DataManager::load_data(const char *data_path, int additional_tokens)
     }
 
     free(tmp_data);
-    printf("Loaded %zu tokens from %s\n", data_size_, data_path);
+    
+    LOG_INFO("Loaded %zu tokens from %s", data_size_, data_path);
 }

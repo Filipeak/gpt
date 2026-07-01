@@ -2,8 +2,8 @@
 #include "cuda_backend.h"
 #include "data_manager.h"
 #include "token_sampler.h"
+#include "logger.h"
 #include <chrono>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -57,20 +57,12 @@ int main(int argc, char *argv[])
 
     if (model_file == nullptr || input_file == nullptr || output_file == nullptr)
     {
-        printf("Usage: %s --model <model_file> --input <input_file> --output <output_file> [--seed <seed>] [--max-tokens <max_tokens>] [--temperature <temperature>] [--top-k <top_k>] [--top-p <top_p>]\n", argv[0]);
+        LOG_ERROR("Usage: %s --model <model_file> --input <input_file> --output <output_file> [--seed <seed>] [--max-tokens <max_tokens>] [--temperature <temperature>] [--top-k <top_k>] [--top-p <top_p>]\n", argv[0]);
         return 1;
     }
 
     // Print configuration
-    printf("Inference configuration:\n");
-    printf("- model_file=%s\n", model_file);
-    printf("- input_file=%s\n", input_file);
-    printf("- output_file=%s\n", output_file);
-    printf("- seed=%lu\n", seed);
-    printf("- max_tokens=%d\n", max_tokens);
-    printf("- temperature=%.2f\n", temperature);
-    printf("- top_k=%d\n", top_k);
-    printf("- top_p=%.2f\n", top_p);
+    LOG_INFO("Inference configuration: model_file=%s, input_file=%s, output_file=%s, seed=%lu, max_tokens=%d, temperature=%.2f, top_k=%d, top_p=%.2f", model_file, input_file, output_file, seed, max_tokens, temperature, top_k, top_p);
 
     // Prepare config
     gpt_config config;
@@ -110,14 +102,14 @@ int main(int argc, char *argv[])
 
         int next_token = sample_token(new_token_logits, config.vocab_size, temperature, top_k, top_p);
 
-        printf("Generated token %d/%d: %d\n", i + 1, max_tokens, next_token);
+        LOG_DEBUG("Generated token %d/%d: %d", i + 1, max_tokens, next_token);
 
         data_manager.push_token(next_token);
     }
 
     // Measure time
     auto end_time = std::chrono::high_resolution_clock::now();
-    printf("Generated %d tokens in %.2f seconds. (%.2f tokens/second)\n", max_tokens, std::chrono::duration<double>(end_time - start_time).count(), (double)max_tokens / std::chrono::duration<double>(end_time - start_time).count());
+    LOG_INFO("Generated %d tokens in %.2f seconds. (%.2f tokens/second)", max_tokens, std::chrono::duration<double>(end_time - start_time).count(), (double)max_tokens / std::chrono::duration<double>(end_time - start_time).count());
 
     // Save generated tokens to output file
     data_manager.save_data(output_file);

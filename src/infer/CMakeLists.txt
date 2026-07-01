@@ -6,5 +6,6 @@ add_executable(gpt_infer
 
 target_link_libraries(gpt_infer
     PRIVATE
+        gpt_core
         gpt_model
 )

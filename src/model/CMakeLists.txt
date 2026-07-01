@@ -6,6 +6,7 @@ add_library(gpt_model
 
 target_link_libraries(gpt_model
     PUBLIC
+        gpt_core
         gpt_backend
 )
 
@@ -21,6 +22,7 @@ add_executable(gpt_test
 
 target_link_libraries(gpt_test
     PRIVATE
+        gpt_core
         gpt_model
         gpt_backend
 )

@@ -6,5 +6,6 @@ add_executable(gpt_train
 
 target_link_libraries(gpt_train
     PRIVATE
-    gpt_model
+        gpt_core
+        gpt_model
 )
