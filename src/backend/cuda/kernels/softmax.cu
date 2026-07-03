@@ -37,6 +37,7 @@ __global__ void softmax_f32_v4_kernel(
         return;
     }
 
+    // Use float4 to process 4 elements at a time for better memory coalescing and performance (assuming vocab_size is a multiple of 4 and memory alignment allows it)
     float4 *x4 = (float4 *)(x + row_idx * vocab_size_padded);
     float4 *y4 = (float4 *)(y + row_idx * vocab_size_padded);
     int num_float4 = vocab_size_padded / 4;
