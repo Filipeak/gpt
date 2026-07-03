@@ -148,13 +148,13 @@ static float *run_and_download_grads(GPT *model, IGPTBackend *be, int *input_tok
 int main()
 {
     gpt_config config;
-    config.max_seq_len = 16;
-    config.vocab_size = 32;
-    config.vocab_size_padded = 48;
-    config.num_layers = 2;
-    config.num_heads = 2;
-    config.d_model = 8;
-    config.d_ffn = 32;
+    config.max_seq_len = 64;
+    config.vocab_size = 507;
+    config.vocab_size_padded = 512;
+    config.num_layers = 4;
+    config.num_heads = 4;
+    config.d_model = 32;
+    config.d_ffn = 256;
 
     const int batch_size = 1;
     const int context = config.max_seq_len;
@@ -230,7 +230,7 @@ int main()
     else
     {
         GradTensorInfo table[GPT_WEIGHTS_PARAMS_COUNT];
-        build_grad_table(&config, table);
+        build_grad_table(&config, table); // Note: This assumes the the exact same order and no padding is used in the gpt_weights buffer.
 
         int passed = 0;
         size_t offset = 0;
