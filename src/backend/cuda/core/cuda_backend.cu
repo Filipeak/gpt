@@ -4,6 +4,7 @@
 CUDABackend::CUDABackend(unsigned long seed)
 {
     CUBLAS_CHECK(cublasCreate(&cublas_handle_));
+    CUBLAS_CHECK(cublasSetMathMode(cublas_handle_, CUBLAS_TF32_TENSOR_OP_MATH));
 
     CURAND_CHECK(curandCreateGenerator(&curand_handle_, CURAND_RNG_PSEUDO_DEFAULT));
     CURAND_CHECK(curandSetPseudoRandomGeneratorSeed((curandGenerator_t)curand_handle_, seed));

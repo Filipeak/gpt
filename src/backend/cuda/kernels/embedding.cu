@@ -45,7 +45,7 @@ void CUDABackend::device_embedding_forward(float *y, const float *wte, const flo
     CUDA_KERNEL_CHECK();
 }
 
-void CUDABackend::device_unembedding_forward(float *y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size)
+void CUDABackend::device_unembedding_forward(float *y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded)
 {
     const float alpha = 1.0f;
     const float beta = 0.0f;
@@ -53,12 +53,12 @@ void CUDABackend::device_unembedding_forward(float *y, const float *x, const flo
     CUBLAS_CHECK(cublasSgemm(
         cublas_handle_,
         CUBLAS_OP_T, CUBLAS_OP_N,
-        vocab_size, batch_size * seq_len, hidden_size,
+        vocab_size_padded, batch_size * seq_len, hidden_size,
         &alpha,
         wte, hidden_size,
         x, hidden_size,
         &beta,
-        y, vocab_size));
+        y, vocab_size_padded));
 
     CUDA_KERNEL_CHECK();
 }
@@ -107,7 +107,7 @@ void CUDABackend::device_embedding_backward(float *grad_wte, float *grad_wpe, co
     CUDA_KERNEL_CHECK();
 }
 
-void CUDABackend::device_unembedding_backward(float *grad_x, float *grad_wte, const float *grad_y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size)
+void CUDABackend::device_unembedding_backward(float *grad_x, float *grad_wte, const float *grad_y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded)
 {
     const float alpha = 1.0f;
     const float beta = 0.0f;
@@ -116,10 +116,10 @@ void CUDABackend::device_unembedding_backward(float *grad_x, float *grad_wte, co
     CUBLAS_CHECK(cublasSgemm(
         cublas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_N,
-        hidden_size, batch_size * seq_len, vocab_size,
+        hidden_size, batch_size * seq_len, vocab_size_padded,
         &alpha,
         wte, hidden_size,
-        grad_y, vocab_size,
+        grad_y, vocab_size_padded,
         &beta,
         grad_x, hidden_size));
 
@@ -129,10 +129,10 @@ void CUDABackend::device_unembedding_backward(float *grad_x, float *grad_wte, co
     CUBLAS_CHECK(cublasSgemm(
         cublas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
-        hidden_size, vocab_size, batch_size * seq_len,
+        hidden_size, vocab_size_padded, batch_size * seq_len,
         &alpha,
         x, hidden_size,
-        grad_y, vocab_size,
+        grad_y, vocab_size_padded,
         &alpha, // Use alpha to accumulate into grad_wte
         grad_wte, hidden_size));
 

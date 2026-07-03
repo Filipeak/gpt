@@ -3,18 +3,20 @@
 #include <cstdlib>
 #include <cmath>
 
+#define PADDED_SIZE_16(size) (((size) + 15) & ~15) // Round up to nearest multiple of 16
+
 void gpt_config::print() const
 {
     LOG_INFO("GPT Configuration: max_seq_len=%d, vocab_size=%d (padded: %d), num_layers=%d, num_heads=%d, d_model=%d, d_ffn=%d", max_seq_len, vocab_size, vocab_size_padded, num_layers, num_heads, d_model, d_ffn);
 }
 
-static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[], size_t *sizes, size_t num_tensors, size_t *total_size_out)
+static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[], size_t *sizes, size_t num_tensors, bool pad_16, size_t *total_size_out)
 {
     size_t total_size = 0;
 
     for (size_t i = 0; i < num_tensors; ++i)
     {
-        total_size += sizes[i];
+        total_size += pad_16 ? PADDED_SIZE_16(sizes[i]) : sizes[i];
     }
 
     float *ptr;
@@ -25,7 +27,7 @@ static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[],
     for (size_t i = 0; i < num_tensors; ++i)
     {
         *(tensor_ptr[i]) = ptr_iter;
-        ptr_iter += sizes[i];
+        ptr_iter += pad_16 ? PADDED_SIZE_16(sizes[i]) : sizes[i];
     }
 
     *total_size_out = total_size;
@@ -42,7 +44,7 @@ gpt_weights::gpt_weights(IGPTBackend *backend, const gpt_config *config) : backe
     const int F = config->d_ffn;
 
     size_t sizes[GPT_WEIGHTS_PARAMS_COUNT];
-    sizes[0] = Vp * D;         // wte
+    sizes[0] = Vp * D;        // wte
     sizes[1] = S * D;         // wpe
     sizes[2] = L * D;         // ln_1_w
     sizes[3] = L * D;         // ln_1_b
@@ -78,7 +80,7 @@ gpt_weights::gpt_weights(IGPTBackend *backend, const gpt_config *config) : backe
         &this->ln_f_b,
     };
 
-    buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_WEIGHTS_PARAMS_COUNT, &buffer_count_);
+    buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_WEIGHTS_PARAMS_COUNT, false, &buffer_count_); // Weights do not need padding, because they do not depend on batch size or sequence length, and are already aligned by design.
 
     LOG_DEBUG("Allocated GPT weights buffer of size %zu floats (%.2f MB).", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0));
 }
@@ -124,8 +126,8 @@ gpt_activations::gpt_activations(IGPTBackend *backend, const gpt_config *config,
     sizes[14] = B * T * D;        // ln_f_out
     sizes[15] = B * T;            // ln_f_means
     sizes[16] = B * T;            // ln_f_vars
-    sizes[17] = B * T * Vp;        // logits
-    sizes[18] = B * T * Vp;        // probs
+    sizes[17] = B * T * Vp;       // logits
+    sizes[18] = B * T * Vp;       // probs
 
     float **ptrs[] = {
         &this->x_emb,
@@ -149,7 +151,7 @@ gpt_activations::gpt_activations(IGPTBackend *backend, const gpt_config *config,
         &this->probs,
     };
 
-    buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_ACTIVATIONS_COUNT, &buffer_count_);
+    buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_ACTIVATIONS_COUNT, true, &buffer_count_);
 
     LOG_DEBUG("Allocated GPT activations buffer of size %zu floats (%.2f MB) for batch size %d and sequence length %d.", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0), batch_size, seq_len);
 }
@@ -189,7 +191,7 @@ gpt_cache_x_grads::gpt_cache_x_grads(IGPTBackend *backend, const gpt_config *con
     sizes[8] = L * B * T * F;     // ffn_down
     sizes[9] = B * T * D;         // ln_f
     sizes[10] = B * T * D;        // unembedding
-    sizes[11] = B * T * Vp;        // softmax_final
+    sizes[11] = B * T * Vp;       // softmax_final
 
     float **ptrs[] = {
         &this->ln_1,
@@ -206,7 +208,7 @@ gpt_cache_x_grads::gpt_cache_x_grads(IGPTBackend *backend, const gpt_config *con
         &this->softmax_final,
     };
 
-    buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_CACHE_X_GRADS_COUNT, &buffer_count_);
+    buffer_ = allocate_tensor_struct(backend_, ptrs, sizes, GPT_CACHE_X_GRADS_COUNT, true, &buffer_count_);
 
     LOG_DEBUG("Allocated GPT cache_x_grads buffer of size %zu floats (%.2f MB) for batch size %d and sequence length %d.", buffer_count_, buffer_count_ * sizeof(float) / (1024.0 * 1024.0), batch_size, seq_len);
 }

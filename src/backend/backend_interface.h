@@ -26,7 +26,7 @@ public:
     /**
      * Tensors:
      * - y              [batch_size, seq_len, hidden_size]
-     * - wte            [vocab_size, hidden_size]
+     * - wte            [vocab_size_padded, hidden_size]
      * - wpe            [seq_len, hidden_size]
      * - input_tokens   [batch_size, seq_len]
      *
@@ -34,16 +34,16 @@ public:
      *  - y = x @ wte + p @ wpe
      *
      * Where:
-     * - x = one-hot encoding of input tokens [batch_size, seq_len, vocab_size]
+     * - x = one-hot encoding of input tokens [batch_size, seq_len, vocab_size_padded]
      * - p = one-hot encoding of position indices [batch_size, seq_len, seq_len]
      */
     virtual void device_embedding_forward(float *y, const float *wte, const float *wpe, const int *input_tokens, int batch_size, int seq_len, int hidden_size) = 0;
 
     /**
      * Tensors:
-     * - y              [batch_size, seq_len, vocab_size]
+     * - y              [batch_size, seq_len, vocab_size_padded]
      * - x              [batch_size, seq_len, hidden_size]
-     * - wte            [vocab_size, hidden_size]
+     * - wte            [vocab_size_padded, hidden_size]
      *
      * Performs:
      * - y = x @ wte^T
@@ -52,7 +52,7 @@ public:
 
     /**
      * Tensors:
-     * - grad_wte       [vocab_size, hidden_size]
+     * - grad_wte       [vocab_size_padded, hidden_size]
      * - grad_wpe       [seq_len, hidden_size]
      * - grad_y         [batch_size, seq_len, hidden_size]
      * - input_tokens   [batch_size, seq_len]
@@ -62,7 +62,7 @@ public:
      * - grad_wpe += p^T @ grad_y
      *
      * Where:
-     * - x = one-hot encoding of input tokens [batch_size, seq_len, vocab_size]
+     * - x = one-hot encoding of input tokens [batch_size, seq_len, vocab_size_padded]
      * - p = one-hot encoding of position indices [batch_size, seq_len, seq_len]
      */
     virtual void device_embedding_backward(float *grad_wte, float *grad_wpe, const float *grad_y, const int *input_tokens, int batch_size, int seq_len, int hidden_size) = 0;
@@ -70,16 +70,16 @@ public:
     /**
      * Tensors:
      * - grad_x         [batch_size, seq_len, hidden_size]
-     * - grad_wte       [vocab_size, hidden_size]
-     * - grad_y         [batch_size, seq_len, vocab_size]
+     * - grad_wte       [vocab_size_padded, hidden_size]
+     * - grad_y         [batch_size, seq_len, vocab_size_padded]
      * - x              [batch_size, seq_len, hidden_size]
-     * - wte            [vocab_size, hidden_size]
+     * - wte            [vocab_size_padded, hidden_size]
      *
      * Performs:
      * - grad_x = grad_y @ wte
      * - grad_wte += grad_y^T @ x
      */
-    virtual void device_unembedding_backward(float *grad_x, float *grad_wte, const float *grad_y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size) = 0;
+    virtual void device_unembedding_backward(float *grad_x, float *grad_wte, const float *grad_y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded) = 0;
 
     /**
      * Tensors:
@@ -218,17 +218,6 @@ public:
     /**
      * Tensors:
      * - grad_x         [batch_size, seq_len, vocab_size_padded]
-     * - grad_y         [batch_size, seq_len, vocab_size_padded]
-     * - y              [batch_size, seq_len, vocab_size_padded]
-     *
-     * Performs:
-     * - grad_x = softmax_backward(grad_y, y)
-     */
-    virtual void device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) = 0;
-
-    /**
-     * Tensors:
-     * - grad_x         [batch_size, seq_len, vocab_size_padded]
      * - y_softmax      [batch_size, seq_len, vocab_size_padded]
      * - tokens_labels  [batch_size, seq_len]
      *
@@ -240,13 +229,13 @@ public:
     /**
      * Tensors:
      * - loss           [1]
-     * - y_softmax      [batch_size, seq_len, vocab_size]
+     * - y_softmax      [batch_size, seq_len, vocab_size_padded]
      * - tokens_labels  [batch_size, seq_len]
      *
      * Performs:
-     * - Mean cross-entropy loss computation (vocab_size is assumed to be padded)
+     * - Mean cross-entropy loss computation
      */
-    virtual void device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size) = 0;
+    virtual void device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size_padded) = 0;
 
     /**
      * Tensors:

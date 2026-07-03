@@ -48,7 +48,13 @@ void CUDABackend::device_cross_entropy_softmax_fused_backward(float *grad_x, con
     CUDA_KERNEL_CHECK();
 }
 
-__global__ void cross_entropy_compute_kernel(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size)
+__global__ void cross_entropy_compute_kernel(
+    float *loss,
+    const float *y_softmax,
+    const int *tokens_labels,
+    int batch_size,
+    int seq_len,
+    int vocab_size_padded)
 {
     int row = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -61,7 +67,7 @@ __global__ void cross_entropy_compute_kernel(float *loss, const float *y_softmax
     const int seq_idx = row % seq_len;
     const int label = tokens_labels[TENSOR_IDX_2D(batch_idx, seq_idx, seq_len)];
 
-    float prob = y_softmax[TENSOR_IDX_3D(batch_idx, seq_idx, label, seq_len, vocab_size)];
+    float prob = y_softmax[TENSOR_IDX_3D(batch_idx, seq_idx, label, seq_len, vocab_size_padded)];
     float log_prob = -logf(prob + EPSILON); // Add small epsilon to avoid log(0)
 
     log_prob /= (float)(batch_size * seq_len); // Normalize by total number of elements
@@ -69,7 +75,7 @@ __global__ void cross_entropy_compute_kernel(float *loss, const float *y_softmax
     atomicAdd(loss, log_prob);
 }
 
-void CUDABackend::device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size)
+void CUDABackend::device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size_padded)
 {
     CUDA_CHECK(cudaMemset(loss, 0, sizeof(float)));
 
@@ -82,7 +88,7 @@ void CUDABackend::device_cross_entropy_loss(float *loss, const float *y_softmax,
         tokens_labels,
         batch_size,
         seq_len,
-        vocab_size);
+        vocab_size_padded);
 
     CUDA_KERNEL_CHECK();
 }

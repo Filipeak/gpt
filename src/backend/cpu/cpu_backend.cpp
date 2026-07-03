@@ -78,13 +78,13 @@ void CPUBackend::device_embedding_forward(float *y, const float *wte, const floa
     }
 }
 
-void CPUBackend::device_unembedding_forward(float *y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size)
+void CPUBackend::device_unembedding_forward(float *y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded)
 {
     for (int b = 0; b < batch_size; ++b)
     {
         for (int s = 0; s < seq_len; ++s)
         {
-            for (int v = 0; v < vocab_size; ++v)
+            for (int v = 0; v < vocab_size_padded; ++v)
             {
                 float sum = 0.0f;
 
@@ -93,7 +93,7 @@ void CPUBackend::device_unembedding_forward(float *y, const float *x, const floa
                     sum += x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] * wte[TENSOR_IDX_2D(v, h, hidden_size)];
                 }
 
-                y[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size)] = sum;
+                y[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size_padded)] = sum;
             }
         }
     }
@@ -116,7 +116,7 @@ void CPUBackend::device_embedding_backward(float *grad_wte, float *grad_wpe, con
     }
 }
 
-void CPUBackend::device_unembedding_backward(float *grad_x, float *grad_wte, const float *grad_y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size)
+void CPUBackend::device_unembedding_backward(float *grad_x, float *grad_wte, const float *grad_y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded)
 {
     for (int b = 0; b < batch_size; ++b)
     {
@@ -126,11 +126,11 @@ void CPUBackend::device_unembedding_backward(float *grad_x, float *grad_wte, con
             {
                 float sum = 0.0f;
 
-                for (int v = 0; v < vocab_size; ++v)
+                for (int v = 0; v < vocab_size_padded; ++v)
                 {
-                    sum += grad_y[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size)] * wte[TENSOR_IDX_2D(v, h, hidden_size)];
+                    sum += grad_y[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size_padded)] * wte[TENSOR_IDX_2D(v, h, hidden_size)];
 
-                    grad_wte[TENSOR_IDX_2D(v, h, hidden_size)] += grad_y[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size)] * x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)];
+                    grad_wte[TENSOR_IDX_2D(v, h, hidden_size)] += grad_y[TENSOR_IDX_3D(b, s, v, seq_len, vocab_size_padded)] * x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)];
                 }
 
                 grad_x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] = sum;
@@ -553,27 +553,6 @@ void CPUBackend::device_softmax_forward(float *y, const float *x, int batch_size
     }
 }
 
-void CPUBackend::device_softmax_backward(float *grad_x, const float *grad_y, const float *y, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
-{
-    for (int b = 0; b < batch_size; ++b)
-    {
-        for (int s = 0; s < seq_len; ++s)
-        {
-            float dot_product = 0.0f;
-
-            for (int i = 0; i < vocab_size; ++i)
-            {
-                dot_product += grad_y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] * y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)];
-            }
-
-            for (int i = 0; i < vocab_size; ++i)
-            {
-                grad_x[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] = y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] * (grad_y[TENSOR_IDX_3D(b, s, i, seq_len, vocab_size_padded)] - dot_product);
-            }
-        }
-    }
-}
-
 void CPUBackend::device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     for (int b = 0; b < batch_size; ++b)
@@ -593,7 +572,7 @@ void CPUBackend::device_cross_entropy_softmax_fused_backward(float *grad_x, cons
     }
 }
 
-void CPUBackend::device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size)
+void CPUBackend::device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size_padded)
 {
     *loss = 0.0f;
 
@@ -602,7 +581,7 @@ void CPUBackend::device_cross_entropy_loss(float *loss, const float *y_softmax, 
         for (int s = 0; s < seq_len; ++s)
         {
             int label = tokens_labels[b * seq_len + s];
-            float softmax_val = y_softmax[TENSOR_IDX_3D(b, s, label, seq_len, vocab_size)];
+            float softmax_val = y_softmax[TENSOR_IDX_3D(b, s, label, seq_len, vocab_size_padded)];
 
             *loss -= logf(softmax_val + 1e-8f); // Add a small epsilon to avoid log(0)
         }

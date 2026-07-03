@@ -24,7 +24,7 @@ struct gpt_config
 struct gpt_weights
 {
     // Input Embeddings
-    float *wte; // Token Embeddings [vocab_size, d_model]
+    float *wte; // Token Embeddings [vocab_size_padded, d_model]
     float *wpe; // Positional Embeddings [max_seq_len, d_model]
 
     // Transformer layers
@@ -88,8 +88,8 @@ struct gpt_activations
     float *ln_f_out;   // Final LayerNorm outputs [B, T, d_model]
     float *ln_f_means; // Final LayerNorm means [B, T]
     float *ln_f_vars;  // Final LayerNorm variances [B, T]
-    float *logits;     // Output logits (unembedded) [B, T, vocab_size]
-    float *probs;      // Output probabilities [B, T, vocab_size]
+    float *logits;     // Output logits (unembedded) [B, T, vocab_size_padded]
+    float *probs;      // Output probabilities [B, T, vocab_size_padded]
 
     // Utility for memory management
     IGPTBackend *backend_;
@@ -119,7 +119,7 @@ struct gpt_cache_x_grads
     // Final
     float *ln_f;          // [B, T, d_model]
     float *unembedding;   // [B, T, d_model]
-    float *softmax_final; // [B, T, vocab_size]
+    float *softmax_final; // [B, T, vocab_size_padded]
 
     // Utility for memory management
     IGPTBackend *backend_;
