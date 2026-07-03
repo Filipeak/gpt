@@ -3,20 +3,20 @@
 #include <cstdlib>
 #include <cmath>
 
-#define PADDED_SIZE_16(size) (((size) + 15) & ~15) // Round up to nearest multiple of 16
+#define PAD_SIZE_4(size) (((size) + 3) & ~3) // Round up to nearest multiple of 4
 
 void gpt_config::print() const
 {
     LOG_INFO("GPT Configuration: max_seq_len=%d, vocab_size=%d (padded: %d), num_layers=%d, num_heads=%d, d_model=%d, d_ffn=%d", max_seq_len, vocab_size, vocab_size_padded, num_layers, num_heads, d_model, d_ffn);
 }
 
-static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[], size_t *sizes, size_t num_tensors, bool pad_16, size_t *total_size_out)
+static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[], size_t *sizes, size_t num_tensors, bool pad_4, size_t *total_size_out)
 {
     size_t total_size = 0;
 
     for (size_t i = 0; i < num_tensors; ++i)
     {
-        total_size += pad_16 ? PADDED_SIZE_16(sizes[i]) : sizes[i];
+        total_size += pad_4 ? PAD_SIZE_4(sizes[i]) : sizes[i];
     }
 
     float *ptr;
@@ -27,7 +27,7 @@ static float *allocate_tensor_struct(IGPTBackend *backend, float **tensor_ptr[],
     for (size_t i = 0; i < num_tensors; ++i)
     {
         *(tensor_ptr[i]) = ptr_iter;
-        ptr_iter += pad_16 ? PADDED_SIZE_16(sizes[i]) : sizes[i];
+        ptr_iter += pad_4 ? PAD_SIZE_4(sizes[i]) : sizes[i];
     }
 
     *total_size_out = total_size;
