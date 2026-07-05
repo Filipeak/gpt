@@ -69,7 +69,8 @@ __global__ void adamw_step_f32_v4_kernel(
 
 void CUDABackend::device_adamw_step(float *params, float *g, float *m, float *v, int size, float lr, float beta1, float beta2, float eps, float weight_decay, int step)
 {
-    size /= 4; // Adjust size for float4 processing
+    CUDA_ASSERT(size % 4 == 0); // Ensure size is a multiple of 4 for float4 processing
+    size /= 4;                  // Adjust size for float4 processing
 
     const int block_size = 256;
     const int grid_size = (size + block_size - 1) / block_size;

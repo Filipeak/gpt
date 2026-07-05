@@ -23,7 +23,6 @@ __inline__ __device__ void warpReduceOnlineSoftmax(
 __global__ void softmax_forward_f32_v4_kernel(
     float *__restrict__ y,
     const float *__restrict__ x,
-    int n,
     int vocab_size,
     int vocab_size_padded)
 {
@@ -31,11 +30,6 @@ __global__ void softmax_forward_f32_v4_kernel(
     const int row_idx = blockIdx.x;
     const int warp_id = thread_id / warpSize;
     const int lane_id = thread_id % warpSize;
-
-    if (row_idx >= n)
-    {
-        return;
-    }
 
     // Use float4 to process 4 elements at a time for better memory coalescing and performance (assuming vocab_size is a multiple of 4 and memory alignment allows it)
     const float4 *x4 = (const float4 *)(x + row_idx * vocab_size_padded);
@@ -118,13 +112,10 @@ __global__ void softmax_forward_f32_v4_kernel(
 void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
     const int n = batch_size * seq_len;
-    const int block_size = 1024;
-    const int grid_size = n;
 
-    softmax_forward_f32_v4_kernel<<<grid_size, block_size>>>(
+    softmax_forward_f32_v4_kernel<<<n, 1024>>>(
         y,
         x,
-        n,
         vocab_size,
         vocab_size_padded);
 

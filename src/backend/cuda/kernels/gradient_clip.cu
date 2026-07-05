@@ -24,7 +24,7 @@ __global__ void clip_grad_norm_kernel(
     }
 
     const float scale = max_norm / (current_norm + EPSILON);
-    float4* g4 = (float4*)g + idx;
+    float4 *g4 = (float4 *)g + idx;
 
     g4->x *= scale;
     g4->y *= scale;
@@ -40,7 +40,8 @@ void CUDABackend::device_clip_grad_norm(float *g, int size, float max_norm)
     CUBLAS_CHECK(cublasSnrm2(cublas_handle_, size, g, 1, clip_norm_device_));
     CUBLAS_CHECK(cublasSetPointerMode(cublas_handle_, previous_pointer_mode));
 
-    size /= 4; // For vectorized float4 access
+    CUDA_ASSERT(size % 4 == 0); // Ensure size is a multiple of 4 for float4 processing
+    size /= 4;                  // For vectorized float4 access
 
     const int block_size = 256;
     const int grid_size = (size + block_size - 1) / block_size;

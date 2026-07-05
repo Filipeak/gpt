@@ -42,7 +42,6 @@ __global__ void layernorm_residual_fused_forward_f32_v4_kernel(
     const float *__restrict__ residual,
     const float *__restrict__ weight,
     const float *__restrict__ bias,
-    int n,
     int d_model)
 {
     const int thread_id = threadIdx.x;
@@ -50,11 +49,6 @@ __global__ void layernorm_residual_fused_forward_f32_v4_kernel(
     const int warp_count = blockDim.x / warpSize;
     const int warp_id = thread_id / warpSize;
     const int lane_id = thread_id % warpSize;
-
-    if (row_idx >= n)
-    {
-        return;
-    }
 
     // Use float4 to process 4 elements at a time for better memory coalescing and performance (assuming d_model is a multiple of 4 and memory alignment allows it)
     float4 *x4 = (float4 *)(x + row_idx * d_model);
@@ -151,6 +145,8 @@ __global__ void layernorm_residual_fused_forward_f32_v4_kernel(
 
 void CUDABackend::device_layernorm_residual_fused_forward(float *y, float *means, float *vars, float *x, const float *residual, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size)
 {
+    CUDA_ASSERT(hidden_size % 4 == 0); // Ensure hidden_size is a multiple of 4 for float4 processing
+
     const int n = batch_size * seq_len;
     const int block_size = min(1024, hidden_size / 4);
 
@@ -162,7 +158,6 @@ void CUDABackend::device_layernorm_residual_fused_forward(float *y, float *means
         residual,
         gamma,
         beta,
-        n,
         hidden_size);
 
     CUDA_KERNEL_CHECK();
@@ -190,7 +185,6 @@ __global__ void layernorm_residual_fused_backward_f32_v4_kernel(
     const float *__restrict__ means,
     const float *__restrict__ vars,
     const float *__restrict__ gamma,
-    int n,
     int d_model)
 {
     const int thread_id = threadIdx.x;
@@ -198,11 +192,6 @@ __global__ void layernorm_residual_fused_backward_f32_v4_kernel(
     const int warp_count = blockDim.x / warpSize;
     const int warp_id = thread_id / warpSize;
     const int lane_id = thread_id % warpSize;
-
-    if (row_idx >= n)
-    {
-        return;
-    }
 
     // Use float4 for vectorized access
     const float4 *x4 = (const float4 *)(x + row_idx * d_model);
@@ -301,6 +290,7 @@ __global__ void layernorm_residual_fused_backward_f32_v4_kernel(
     }
 }
 
+// TODO: Use float4 for vectorized access and better memory coalescing
 __global__ void layernorm_backward_weights_bias_f32_kernel(
     float *__restrict__ grad_gamma,
     float *__restrict__ grad_beta,
@@ -367,6 +357,8 @@ __global__ void layernorm_backward_weights_bias_f32_kernel(
 
 void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *grad_residual, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size)
 {
+    CUDA_ASSERT(hidden_size % 4 == 0); // Ensure hidden_size is a multiple of 4 for float4 processing
+
     const int n = batch_size * seq_len;
     const int block_size = min(1024, hidden_size / 4);
 
@@ -380,7 +372,6 @@ void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float 
         means,
         vars,
         gamma,
-        n,
         hidden_size);
 
     CUDA_KERNEL_CHECK();

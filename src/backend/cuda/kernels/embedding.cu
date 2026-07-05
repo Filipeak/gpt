@@ -30,7 +30,7 @@ void CUDABackend::device_embedding_forward(float *y, const float *wte, const flo
 {
     const int n = batch_size * seq_len;
 
-    dim3 blockDim(32, 32);
+    dim3 blockDim(128, 4);
     dim3 gridDim((hidden_size + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);
 
     embedding_forward_f32_kernel<<<gridDim, blockDim>>>(

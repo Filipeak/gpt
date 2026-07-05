@@ -13,13 +13,7 @@ __global__ void cross_entropy_softmax_fused_backward_f32_v4_kernel(
     int vocab_size_padded,
     float scale)
 {
-    const int row = blockIdx.x;
-
-    if (row >= num_rows)
-    {
-        return;
-    }
-
+    const int row = blockIdx.x; // Guaranteed to be less than num_rows
     const int label = tokens_labels[row];
 
     // Get pointers to current rows

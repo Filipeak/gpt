@@ -6,6 +6,18 @@
 #include <cublas_v2.h>
 #include <curand.h>
 
+#define CUDA_ASSERT(expr)                            \
+    do                                               \
+    {                                                \
+        if (!(expr))                                 \
+        {                                            \
+            printf("CUDA Assertion Failed: %s:%i\n", \
+                   __FILE__,                         \
+                   __LINE__);                        \
+            abort();                                 \
+        }                                            \
+    } while (0)
+
 #define CUDA_CHECK(expr_to_check)                         \
     do                                                    \
     {                                                     \
@@ -17,7 +29,6 @@
                    __LINE__,                              \
                    result,                                \
                    cudaGetErrorString(result));           \
-                                                          \
             abort();                                      \
         }                                                 \
     } while (0)
@@ -46,7 +57,6 @@
                    __FILE__,                           \
                    __LINE__,                           \
                    result);                            \
-                                                       \
             abort();                                   \
         }                                              \
     } while (0)

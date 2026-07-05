@@ -66,6 +66,7 @@ void CUDABackend::device_linear_activation_fused_forward(float *y, float *act, c
 }
 
 // TODO: Consider using cublasSgemv instead of custom kernel
+// TODO: Use float4 for vectorized access to improve performance
 __global__ void linear_bias_gradient_kernel(
     float *__restrict__ grad_b,
     const float *__restrict__ grad_y,
@@ -157,6 +158,7 @@ void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *gr
     CUDA_KERNEL_CHECK();
 }
 
+// TODO: Use float4 for vectorized access to improve performance
 __global__ void activation_backward_kernel(
     float *__restrict__ grad_x,
     const float *__restrict__ grad_y,
