@@ -41,4 +41,5 @@ public:
 private:
     cublasContext *cublas_handle_;
     curandGenerator_st *curand_handle_;
+    float *clip_norm_device_;
 };
