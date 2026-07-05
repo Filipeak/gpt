@@ -25,35 +25,45 @@ __global__ void adamw_step_f32_v4_kernel(
         float4 *m4 = (float4 *)m + idx;
         float4 *v4 = (float4 *)v + idx;
 
+        float4 p_val = *params4;
+        float4 g_val = *g4;
+        float4 m_val = *m4;
+        float4 v_val = *v4;
+
         float m_hat, v_hat;
 
         // First component
-        m4->x = beta1 * m4->x + (1.0f - beta1) * g4->x;
-        v4->x = beta2 * v4->x + (1.0f - beta2) * g4->x * g4->x;
-        m_hat = m4->x * bias_correction1;
-        v_hat = v4->x * bias_correction2;
-        params4->x -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * params4->x);
+        m_val.x = beta1 * m_val.x + (1.0f - beta1) * g_val.x;
+        v_val.x = beta2 * v_val.x + (1.0f - beta2) * g_val.x * g_val.x;
+        m_hat = m_val.x * bias_correction1;
+        v_hat = v_val.x * bias_correction2;
+        p_val.x -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * p_val.x);
 
         // Second component
-        m4->y = beta1 * m4->y + (1.0f - beta1) * g4->y;
-        v4->y = beta2 * v4->y + (1.0f - beta2) * g4->y * g4->y;
-        m_hat = m4->y * bias_correction1;
-        v_hat = v4->y * bias_correction2;
-        params4->y -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * params4->y);
+        m_val.y = beta1 * m_val.y + (1.0f - beta1) * g_val.y;
+        v_val.y = beta2 * v_val.y + (1.0f - beta2) * g_val.y * g_val.y;
+        m_hat = m_val.y * bias_correction1;
+        v_hat = v_val.y * bias_correction2;
+        p_val.y -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * p_val.y);
 
         // Third component
-        m4->z = beta1 * m4->z + (1.0f - beta1) * g4->z;
-        v4->z = beta2 * v4->z + (1.0f - beta2) * g4->z * g4->z;
-        m_hat = m4->z * bias_correction1;
-        v_hat = v4->z * bias_correction2;
-        params4->z -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * params4->z);
+        m_val.z = beta1 * m_val.z + (1.0f - beta1) * g_val.z;
+        v_val.z = beta2 * v_val.z + (1.0f - beta2) * g_val.z * g_val.z;
+        m_hat = m_val.z * bias_correction1;
+        v_hat = v_val.z * bias_correction2;
+        p_val.z -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * p_val.z);
 
         // Fourth component
-        m4->w = beta1 * m4->w + (1.0f - beta1) * g4->w;
-        v4->w = beta2 * v4->w + (1.0f - beta2) * g4->w * g4->w;
-        m_hat = m4->w * bias_correction1;
-        v_hat = v4->w * bias_correction2;
-        params4->w -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * params4->w);
+        m_val.w = beta1 * m_val.w + (1.0f - beta1) * g_val.w;
+        v_val.w = beta2 * v_val.w + (1.0f - beta2) * g_val.w * g_val.w;
+        m_hat = m_val.w * bias_correction1;
+        v_hat = v_val.w * bias_correction2;
+        p_val.w -= lr * (m_hat / (sqrtf(v_hat) + eps) + weight_decay * p_val.w);
+
+        // Assign updated values back to global memory
+        *params4 = p_val;
+        *m4 = m_val;
+        *v4 = v_val;
     }
 }
 
