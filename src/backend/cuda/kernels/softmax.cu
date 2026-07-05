@@ -20,7 +20,7 @@ __inline__ __device__ void warpReduceOnlineSoftmax(
     }
 }
 
-__global__ void softmax_f32_v4_kernel(
+__global__ void softmax_forward_f32_v4_kernel(
     float *__restrict__ y,
     const float *__restrict__ x,
     int n,
@@ -29,8 +29,8 @@ __global__ void softmax_f32_v4_kernel(
 {
     const int thread_id = threadIdx.x;
     const int row_idx = blockIdx.x;
-    const int warp_id = thread_id / 32;
-    const int lane_id = thread_id % 32;
+    const int warp_id = thread_id / warpSize;
+    const int lane_id = thread_id % warpSize;
 
     if (row_idx >= n)
     {
@@ -38,7 +38,7 @@ __global__ void softmax_f32_v4_kernel(
     }
 
     // Use float4 to process 4 elements at a time for better memory coalescing and performance (assuming vocab_size is a multiple of 4 and memory alignment allows it)
-    float4 *x4 = (float4 *)(x + row_idx * vocab_size_padded);
+    const float4 *x4 = (const float4 *)(x + row_idx * vocab_size_padded);
     float4 *y4 = (float4 *)(y + row_idx * vocab_size_padded);
     int num_float4 = vocab_size_padded / 4;
 
@@ -103,12 +103,15 @@ __global__ void softmax_f32_v4_kernel(
     for (int i = thread_id; i < num_float4; i += blockDim.x)
     {
         float4 val4 = x4[i];
+        float4 result;
 
         // Compute softmax for each of the 4 values in val4 (ignore padded values)
-        y4[i].x = i * 4 + 0 < vocab_size ? expf(val4.x - global_max) / global_sum : 0.0f;
-        y4[i].y = i * 4 + 1 < vocab_size ? expf(val4.y - global_max) / global_sum : 0.0f;
-        y4[i].z = i * 4 + 2 < vocab_size ? expf(val4.z - global_max) / global_sum : 0.0f;
-        y4[i].w = i * 4 + 3 < vocab_size ? expf(val4.w - global_max) / global_sum : 0.0f;
+        result.x = i * 4 + 0 < vocab_size ? expf(val4.x - global_max) / global_sum : 0.0f;
+        result.y = i * 4 + 1 < vocab_size ? expf(val4.y - global_max) / global_sum : 0.0f;
+        result.z = i * 4 + 2 < vocab_size ? expf(val4.z - global_max) / global_sum : 0.0f;
+        result.w = i * 4 + 3 < vocab_size ? expf(val4.w - global_max) / global_sum : 0.0f;
+
+        y4[i] = result;
     }
 }
 
@@ -118,7 +121,7 @@ void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_siz
     const int block_size = 1024;
     const int grid_size = n;
 
-    softmax_f32_v4_kernel<<<grid_size, block_size>>>(
+    softmax_forward_f32_v4_kernel<<<grid_size, block_size>>>(
         y,
         x,
         n,
