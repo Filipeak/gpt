@@ -1,10 +1,40 @@
 #include "cuda_backend.h"
 #include "utils/cuda_utils.cuh"
 #include "tensor_utils.h"
+#include <math.h>
 
 #define EPSILON 1e-5f
 
-__global__ void layernorm_forward_kernel(
+struct WelfordsData
+{
+    int count;
+    float mean;
+    float m2;
+};
+
+__inline__ __device__ void warpReduceWelfords(
+    WelfordsData &data)
+{
+#pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2)
+    {
+        WelfordsData other_data;
+        other_data.count = __shfl_down_sync(0xffffffff, data.count, offset);
+        other_data.mean = __shfl_down_sync(0xffffffff, data.mean, offset);
+        other_data.m2 = __shfl_down_sync(0xffffffff, data.m2, offset);
+
+        if (other_data.count > 0)
+        {
+            int total_count = data.count + other_data.count;
+            float delta = other_data.mean - data.mean;
+            data.mean += delta * other_data.count / total_count;
+            data.m2 += other_data.m2 + delta * delta * data.count * other_data.count / total_count;
+            data.count = total_count;
+        }
+    }
+}
+
+__global__ void layernorm_forward_f32_v4_kernel(
     float *__restrict__ y,
     float *__restrict__ means,
     float *__restrict__ vars,
@@ -14,55 +44,102 @@ __global__ void layernorm_forward_kernel(
     int n,
     int d_model)
 {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    const int thread_id = threadIdx.x;
+    const int row_idx = blockIdx.x;
+    const int warp_count = blockDim.x / warpSize;
+    const int warp_id = thread_id / warpSize;
+    const int lane_id = thread_id % warpSize;
 
-    if (row >= n)
+    if (row_idx >= n)
     {
         return;
     }
 
-    // Mean calculation
-    float mean = 0.0f;
+    // Use float4 to process 4 elements at a time for better memory coalescing and performance (assuming d_model is a multiple of 4 and memory alignment allows it)
+    const float4 *x4 = (const float4 *)(x + row_idx * d_model);
+    float4 *y4 = (float4 *)(y + row_idx * d_model);
+    int num_float4 = d_model / 4;
 
-    for (int channel = 0; channel < d_model; channel++)
+    // Compute local mean and variance using Welford's algorithm
+    WelfordsData local_welfords_data;
+    local_welfords_data.count = 0;
+    local_welfords_data.mean = 0.0f;
+    local_welfords_data.m2 = 0.0f;
+
+    for (int i = thread_id; i < num_float4; i += blockDim.x)
     {
-        mean += x[TENSOR_IDX_2D(row, channel, d_model)];
+        float4 val4 = x4[i];
+        float vals[4] = {val4.x, val4.y, val4.z, val4.w};
+
+#pragma unroll
+        for (int j = 0; j < 4; j++)
+        {
+            float v = vals[j];
+            local_welfords_data.count += 1;
+            float delta = v - local_welfords_data.mean;
+            local_welfords_data.mean += delta / local_welfords_data.count;
+            float delta2 = v - local_welfords_data.mean;
+            local_welfords_data.m2 += delta * delta2;
+        }
     }
 
-    mean /= d_model;
+    // Warp reduction
+    warpReduceWelfords(local_welfords_data);
 
-    means[row] = mean;
+    // Block reduction (max block size is 1024 threads, so 32 warps)
+    __shared__ WelfordsData shared_data[32];
 
-    // Variance calculation
-    float variance = 0.0f;
-
-    for (int channel = 0; channel < d_model; channel++)
+    if (lane_id == 0)
     {
-        float diff = x[TENSOR_IDX_2D(row, channel, d_model)] - mean;
-
-        variance += diff * diff;
+        shared_data[warp_id] = local_welfords_data;
     }
 
-    variance /= d_model;
+    __syncthreads();
 
-    vars[row] = variance;
+    // Final reduction by the first warp
+    __shared__ float shared_mean;
+    __shared__ float shared_inv_std;
 
-    // Final normalization
-    for (int channel = 0; channel < d_model; channel++)
+    if (warp_id == 0)
     {
-        float normalized = (x[TENSOR_IDX_2D(row, channel, d_model)] - mean) * rsqrtf(variance + EPSILON);
+        local_welfords_data = lane_id < warp_count ? shared_data[lane_id] : WelfordsData{0, 0.0f, 0.0f};
 
-        y[TENSOR_IDX_2D(row, channel, d_model)] = normalized * weight[channel] + bias[channel];
+        warpReduceWelfords(local_welfords_data);
+
+        if (lane_id == 0)
+        {
+            means[row_idx] = local_welfords_data.mean;
+            vars[row_idx] = rsqrtf(local_welfords_data.m2 / local_welfords_data.count + EPSILON); // Store inverse std for normalization
+
+            // Broadcast mean and variance to all threads in the block
+            shared_mean = means[row_idx];
+            shared_inv_std = vars[row_idx];
+        }
+    }
+
+    __syncthreads();
+
+    // Compute normalized output
+    for (int i = thread_id; i < num_float4; i += blockDim.x)
+    {
+        float4 val4 = x4[i];
+        float4 result;
+
+        result.x = (val4.x - shared_mean) * shared_inv_std * weight[i * 4 + 0] + bias[i * 4 + 0];
+        result.y = (val4.y - shared_mean) * shared_inv_std * weight[i * 4 + 1] + bias[i * 4 + 1];
+        result.z = (val4.z - shared_mean) * shared_inv_std * weight[i * 4 + 2] + bias[i * 4 + 2];
+        result.w = (val4.w - shared_mean) * shared_inv_std * weight[i * 4 + 3] + bias[i * 4 + 3];
+
+        y4[i] = result;
     }
 }
 
 void CUDABackend::device_layernorm_forward(float *y, float *means, float *vars, const float *x, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size)
 {
     const int n = batch_size * seq_len;
-    const int block_size = 256;
-    const int grid_size = (n + block_size - 1) / block_size;
+    const int block_size = min(1024, hidden_size / 4);
 
-    layernorm_forward_kernel<<<grid_size, block_size>>>(
+    layernorm_forward_f32_v4_kernel<<<n, block_size>>>(
         y,
         means,
         vars,
@@ -75,52 +152,20 @@ void CUDABackend::device_layernorm_forward(float *y, float *means, float *vars, 
     CUDA_KERNEL_CHECK();
 }
 
-__global__ void layernorm_backward_kernel(
-    float *__restrict__ grad_x,
-    const float *__restrict__ grad_y,
-    const float *__restrict__ x,
-    const float *__restrict__ means,
-    const float *__restrict__ vars,
-    const float *__restrict__ gamma,
-    int n,
-    int d_model)
+__inline__ __device__ void warpReduceLayernormSums(
+    float &sum1,
+    float &sum2)
 {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (row >= n)
+#pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2)
     {
-        return;
-    }
-
-    float mean = means[row];
-    float variance = vars[row];
-    float inv_std = rsqrtf(variance + EPSILON);
-
-    float sum1 = 0.0f;
-    float sum2 = 0.0f;
-
-    for (int channel = 0; channel < d_model; channel++)
-    {
-        float normalized = (x[TENSOR_IDX_2D(row, channel, d_model)] - mean) * inv_std;
-        float dy = grad_y[TENSOR_IDX_2D(row, channel, d_model)];
-
-        sum1 += dy * gamma[channel];
-        sum2 += dy * gamma[channel] * normalized;
-    }
-
-    sum1 /= d_model;
-    sum2 /= d_model;
-
-    for (int channel = 0; channel < d_model; channel++)
-    {
-        float normalized = (x[TENSOR_IDX_2D(row, channel, d_model)] - mean) * inv_std;
-        float dy = grad_y[TENSOR_IDX_2D(row, channel, d_model)];
-
-        grad_x[TENSOR_IDX_2D(row, channel, d_model)] = inv_std * (dy * gamma[channel] - sum1 - normalized * sum2);
+        sum1 += __shfl_down_sync(0xffffffff, sum1, offset);
+        sum2 += __shfl_down_sync(0xffffffff, sum2, offset);
     }
 }
 
-__global__ void layernorm_weights_gradients_fused_kernel(
+__global__ void layernorm_backward_f32_v4_kernel(
+    float *__restrict__ grad_x,
     float *__restrict__ grad_gamma,
     float *__restrict__ grad_beta,
     const float *__restrict__ grad_y,
@@ -131,37 +176,202 @@ __global__ void layernorm_weights_gradients_fused_kernel(
     int n,
     int d_model)
 {
-    const int channel = blockIdx.x * blockDim.x + threadIdx.x;
+    const int thread_id = threadIdx.x;
+    const int row_idx = blockIdx.x;
+    const int warp_count = blockDim.x / warpSize;
+    const int warp_id = thread_id / warpSize;
+    const int lane_id = thread_id % warpSize;
 
-    if (channel >= d_model)
+    if (row_idx >= n)
     {
         return;
     }
 
-    float grad_gamma_sum = 0.0f;
-    float grad_beta_sum = 0.0f;
+    // Use float4 for vectorized access
+    const float4 *x4 = (const float4 *)(x + row_idx * d_model);
+    const float4 *grad_y4 = (const float4 *)(grad_y + row_idx * d_model);
+    int num_float4 = d_model / 4;
 
-    for (int row = 0; row < n; row++)
+    // Cache mean and variance for this row
+    float mean = means[row_idx];
+    float inv_std = vars[row_idx];
+
+    // Compute local sums
+    float sum1 = 0.0f;
+    float sum2 = 0.0f;
+
+    for (int i = thread_id; i < num_float4; i += blockDim.x)
     {
-        float normalized = (x[TENSOR_IDX_2D(row, channel, d_model)] - means[row]) * rsqrtf(vars[row] + EPSILON);
-        float dy = grad_y[TENSOR_IDX_2D(row, channel, d_model)];
+        float4 x_val = x4[i];
+        float4 dy_val = grad_y4[i];
 
-        grad_gamma_sum += dy * normalized;
-        grad_beta_sum += dy;
+        float normalized[4] = {
+            (x_val.x - mean) * inv_std,
+            (x_val.y - mean) * inv_std,
+            (x_val.z - mean) * inv_std,
+            (x_val.w - mean) * inv_std,
+        };
+        float dy[4] = {dy_val.x, dy_val.y, dy_val.z, dy_val.w};
+
+        for (int j = 0; j < 4; j++)
+        {
+            int channel = i * 4 + j;
+
+            sum1 += dy[j] * gamma[channel];
+            sum2 += dy[j] * gamma[channel] * normalized[j];
+        }
     }
 
-    grad_gamma[channel] += grad_gamma_sum;
-    grad_beta[channel] += grad_beta_sum;
+    // Reduce sums across the warp
+    warpReduceLayernormSums(sum1, sum2);
+
+    // Reduce sums across the block
+    __shared__ float shared_sum1[32];
+    __shared__ float shared_sum2[32];
+
+    if (lane_id == 0)
+    {
+        shared_sum1[warp_id] = sum1;
+        shared_sum2[warp_id] = sum2;
+    }
+
+    __syncthreads();
+
+    // Final reduction by the first warp
+    if (warp_id == 0)
+    {
+        sum1 = lane_id < warp_count ? shared_sum1[lane_id] : 0.0f;
+        sum2 = lane_id < warp_count ? shared_sum2[lane_id] : 0.0f;
+
+        warpReduceLayernormSums(sum1, sum2);
+
+        if (lane_id == 0)
+        {
+            shared_sum1[0] = sum1;
+            shared_sum2[0] = sum2;
+        }
+    }
+
+    __syncthreads();
+
+    // Broadcast the final sums to all threads in the block
+    float final_sum1 = shared_sum1[0];
+    float final_sum2 = shared_sum2[0];
+
+    // Compute final gradients for x
+    for (int i = thread_id; i < num_float4; i += blockDim.x)
+    {
+        float4 x_val = x4[i];
+        float4 dy_val = grad_y4[i];
+
+        float normalized[4] = {
+            (x_val.x - mean) * inv_std,
+            (x_val.y - mean) * inv_std,
+            (x_val.z - mean) * inv_std,
+            (x_val.w - mean) * inv_std,
+        };
+        float dy[4] = {dy_val.x, dy_val.y, dy_val.z, dy_val.w};
+
+        for (int j = 0; j < 4; j++)
+        {
+            int channel = i * 4 + j;
+
+            grad_x[TENSOR_IDX_2D(row_idx, channel, d_model)] = inv_std * (dy[j] * gamma[channel] - final_sum1 / d_model - normalized[j] * final_sum2 / d_model);
+        }
+    }
+}
+
+__inline__ __device__ void warpReduceLayernormGradients(
+    float &grad_gamma,
+    float &grad_beta)
+{
+#pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2)
+    {
+        grad_gamma += __shfl_down_sync(0xffffffff, grad_gamma, offset);
+        grad_beta += __shfl_down_sync(0xffffffff, grad_beta, offset);
+    }
+}
+
+__global__ void layernorm_backward_weights_bias_f32_kernel(
+    float *__restrict__ grad_gamma,
+    float *__restrict__ grad_beta,
+    const float *__restrict__ grad_y,
+    const float *__restrict__ x,
+    const float *__restrict__ means,
+    const float *__restrict__ vars,
+    int n,
+    int d_model)
+{
+    const int thread_id = threadIdx.x;
+    const int col = blockIdx.x;
+    const int warp_count = blockDim.x / warpSize;
+    const int warp_id = thread_id / warpSize;
+    const int lane_id = thread_id % warpSize;
+
+    if (col >= d_model)
+    {
+        return;
+    }
+
+    // Compute local gradients for gamma and beta
+    float local_grad_gamma = 0.0f;
+    float local_grad_beta = 0.0f;
+
+    for (int row = thread_id; row < n; row += blockDim.x)
+    {
+        float mean = means[row];
+        float inv_std = vars[row];
+
+        float x_val = x[TENSOR_IDX_2D(row, col, d_model)];
+        float dy_val = grad_y[TENSOR_IDX_2D(row, col, d_model)];
+
+        float normalized = (x_val - mean) * inv_std;
+
+        local_grad_gamma += dy_val * normalized;
+        local_grad_beta += dy_val;
+    }
+
+    // Warp reduction for gradients
+    warpReduceLayernormGradients(local_grad_gamma, local_grad_beta);
+
+    // Reduce sums across the block
+    __shared__ float shared_grad_gamma[32];
+    __shared__ float shared_grad_beta[32];
+
+    if (lane_id == 0)
+    {
+        shared_grad_gamma[warp_id] = local_grad_gamma;
+        shared_grad_beta[warp_id] = local_grad_beta;
+    }
+
+    __syncthreads();
+
+    // Final reduction by the first warp
+    if (warp_id == 0)
+    {
+        local_grad_gamma = lane_id < warp_count ? shared_grad_gamma[lane_id] : 0.0f;
+        local_grad_beta = lane_id < warp_count ? shared_grad_beta[lane_id] : 0.0f;
+
+        warpReduceLayernormGradients(local_grad_gamma, local_grad_beta);
+
+        if (lane_id == 0)
+        {
+            grad_gamma[col] = local_grad_gamma;
+            grad_beta[col] = local_grad_beta;
+        }
+    }
 }
 
 void CUDABackend::device_layernorm_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size)
 {
     const int n = batch_size * seq_len;
-    const int block_size_backward = 256;
-    const int grid_size_backward = (n + block_size_backward - 1) / block_size_backward;
+    const int block_size = min(1024, hidden_size / 4);
 
-    layernorm_backward_kernel<<<grid_size_backward, block_size_backward>>>(
+    layernorm_backward_f32_v4_kernel<<<n, block_size>>>(
         grad_x,
+        grad_gamma,
+        grad_beta,
         grad_y,
         x,
         means,
@@ -172,17 +382,13 @@ void CUDABackend::device_layernorm_backward(float *grad_x, float *grad_gamma, fl
 
     CUDA_KERNEL_CHECK();
 
-    const int block_size_weights = 256;
-    const int grid_size_weights = (hidden_size + block_size_weights - 1) / block_size_weights;
-
-    layernorm_weights_gradients_fused_kernel<<<grid_size_weights, block_size_weights>>>(
+    layernorm_backward_weights_bias_f32_kernel<<<hidden_size, 256>>>(
         grad_gamma,
         grad_beta,
         grad_y,
         x,
         means,
         vars,
-        gamma,
         n,
         hidden_size);
 
