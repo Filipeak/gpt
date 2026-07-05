@@ -2,6 +2,8 @@
 #include "utils/cuda_utils.cuh"
 #include "tensor_utils.h"
 
+// TODO: Cache the tanh and gelu values to avoid recomputation in backward pass
+// TODO: Consider fusing entire GEMM + bias + activation into a single kernel for better performance
 __global__ void add_bias_and_activate_fused_kernel(
     float *__restrict__ y,
     float *__restrict__ act,
@@ -10,8 +12,8 @@ __global__ void add_bias_and_activate_fused_kernel(
     int n_rows,
     int n_cols)
 {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
-    const int col = blockIdx.y * blockDim.y + threadIdx.y;
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int row = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (row >= n_rows || col >= n_cols)
     {
@@ -49,8 +51,8 @@ void CUDABackend::device_linear_activation_fused_forward(float *y, float *act, c
     CUDA_KERNEL_CHECK();
 
     const int n = batch_size * seq_len;
-    const dim3 blockDim(16, 16);
-    const dim3 gridDim((n + blockDim.x - 1) / blockDim.x, (output_size + blockDim.y - 1) / blockDim.y);
+    const dim3 blockDim(32, 8);
+    const dim3 gridDim((output_size + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);
 
     add_bias_and_activate_fused_kernel<<<gridDim, blockDim>>>(
         y,
@@ -63,29 +65,66 @@ void CUDABackend::device_linear_activation_fused_forward(float *y, float *act, c
     CUDA_KERNEL_CHECK();
 }
 
+__inline__ __device__ void warpReduceBiasSum(
+    float &local_sum)
+{
+#pragma unroll
+    for (int offset = warpSize / 2; offset > 0; offset /= 2)
+    {
+        local_sum += __shfl_down_sync(0xffffffff, local_sum, offset);
+    }
+}
+
+// TODO: Consider using cublasSgemv instead of custom kernel
 __global__ void linear_bias_gradient_kernel(
     float *__restrict__ grad_b,
     const float *__restrict__ grad_y,
     int n_rows,
     int n_cols)
 {
-    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int thread_id = threadIdx.x;
+    const int col = blockIdx.x;
+    const int warp_count = blockDim.x / warpSize;
+    const int warp_id = thread_id / warpSize;
+    const int lane_id = thread_id % warpSize;
 
     if (col >= n_cols)
     {
         return;
     }
 
-    float sum = 0.0f;
+    float local_sum = 0.0f;
 
-    for (int row = 0; row < n_rows; ++row)
+    for (int row = thread_id; row < n_rows; row += blockDim.x)
     {
-        const int cur_idx = TENSOR_IDX_2D(row, col, n_cols);
-
-        sum += grad_y[cur_idx];
+        local_sum += grad_y[TENSOR_IDX_2D(row, col, n_cols)];
     }
 
-    grad_b[col] += sum;
+    // Reduce within warp
+    warpReduceBiasSum(local_sum);
+
+    // Block reduction using shared memory
+    __shared__ float shared_sum[32]; // Assuming a maximum of 32 warps
+
+    if (lane_id == 0)
+    {
+        shared_sum[warp_id] = local_sum;
+    }
+
+    __syncthreads();
+
+    // Final reduction by the first warp
+    if (warp_id == 0)
+    {
+        local_sum = lane_id < warp_count ? shared_sum[lane_id] : 0.0f;
+
+        warpReduceBiasSum(local_sum);
+
+        if (lane_id == 0)
+        {
+            grad_b[col] += local_sum;
+        }
+    }
 }
 
 void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *grad_b, const float *grad_y, const float *x, const float *w, int batch_size, int seq_len, int input_size, int output_size)
@@ -120,10 +159,7 @@ void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *gr
     CUDA_KERNEL_CHECK();
 
     // grad_b += sum(grad_y, axis=0)
-    const int block_size = 256;
-    const int grid_size = (output_size + block_size - 1) / block_size;
-
-    linear_bias_gradient_kernel<<<grid_size, block_size>>>(
+    linear_bias_gradient_kernel<<<output_size, 256>>>(
         grad_b,
         grad_y,
         batch_size * seq_len,
@@ -139,8 +175,8 @@ __global__ void activation_backward_kernel(
     int n_rows,
     int n_cols)
 {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
-    const int col = blockIdx.y * blockDim.y + threadIdx.y;
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int row = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (row >= n_rows || col >= n_cols)
     {
@@ -162,8 +198,8 @@ __global__ void activation_backward_kernel(
 void CUDABackend::device_activation_backward(float *grad_x, const float *grad_y, const float *x, int batch_size, int seq_len, int output_size)
 {
     const int n = batch_size * seq_len;
-    const dim3 blockDim(16, 16);
-    const dim3 gridDim((n + blockDim.x - 1) / blockDim.x, (output_size + blockDim.y - 1) / blockDim.y);
+    const dim3 blockDim(32, 8);
+    const dim3 gridDim((output_size + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);
 
     activation_backward_kernel<<<gridDim, blockDim>>>(
         grad_x,
