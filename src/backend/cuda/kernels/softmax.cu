@@ -15,7 +15,7 @@ __inline__ __device__ void warpReduceOnlineSoftmax(
         float other_sum = __shfl_down_sync(0xffffffff, sum_val, offset);
         float new_max = max(max_val, other_max);
 
-        sum_val = sum_val * expf(max_val - new_max) + other_sum * expf(other_max - new_max);
+        sum_val = sum_val * __expf(max_val - new_max) + other_sum * __expf(other_max - new_max);
         max_val = new_max;
     }
 }
@@ -57,7 +57,7 @@ __global__ void softmax_forward_f32_v4_kernel(
             float v = i * 4 + j < vocab_size ? vals[j] : -FLT_MAX; // Ignore padded values
             float new_max = max(max_val, v);
 
-            sum_val = sum_val * expf(max_val - new_max) + expf(v - new_max);
+            sum_val = sum_val * __expf(max_val - new_max) + __expf(v - new_max);
             max_val = new_max;
         }
     }
@@ -106,10 +106,10 @@ __global__ void softmax_forward_f32_v4_kernel(
         float4 result;
 
         // Compute softmax for each of the 4 values in val4 (ignore padded values)
-        result.x = i * 4 + 0 < vocab_size ? expf(val4.x - global_max) / global_sum : 0.0f;
-        result.y = i * 4 + 1 < vocab_size ? expf(val4.y - global_max) / global_sum : 0.0f;
-        result.z = i * 4 + 2 < vocab_size ? expf(val4.z - global_max) / global_sum : 0.0f;
-        result.w = i * 4 + 3 < vocab_size ? expf(val4.w - global_max) / global_sum : 0.0f;
+        result.x = i * 4 + 0 < vocab_size ? __expf(val4.x - global_max) / global_sum : 0.0f;
+        result.y = i * 4 + 1 < vocab_size ? __expf(val4.y - global_max) / global_sum : 0.0f;
+        result.z = i * 4 + 2 < vocab_size ? __expf(val4.z - global_max) / global_sum : 0.0f;
+        result.w = i * 4 + 3 < vocab_size ? __expf(val4.w - global_max) / global_sum : 0.0f;
 
         y4[i] = result;
     }
