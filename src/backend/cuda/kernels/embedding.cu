@@ -2,44 +2,43 @@
 #include "utils/cuda_utils.cuh"
 #include "tensor_utils.h"
 
-__global__ void embedding_forward_kernel(
+__global__ void embedding_forward_f32_kernel(
     float *__restrict__ y,
     const float *__restrict__ wte,
     const float *__restrict__ wpe,
     const int *__restrict__ input_tokens,
-    int batch_size,
-    int seq_len,
+    int n,
     int d_model)
 {
-    const int b = blockIdx.x * blockDim.x + threadIdx.x;
-    const int t = blockIdx.y * blockDim.y + threadIdx.y;
-    const int c = blockIdx.z * blockDim.z + threadIdx.z;
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int row = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (b >= batch_size || t >= seq_len || c >= d_model)
+    if (col >= d_model || row >= n)
     {
         return;
     }
 
-    const int token_id = input_tokens[b * seq_len + t];
-    const int y_idx = TENSOR_IDX_3D(b, t, c, seq_len, d_model);
-    const int wte_idx = TENSOR_IDX_2D(token_id, c, d_model);
-    const int wpe_idx = TENSOR_IDX_2D(t, c, d_model);
+    const int token_id = input_tokens[row];
+    const int y_idx = row * d_model + col;
+    const int wte_idx = token_id * d_model + col;
+    const int wpe_idx = row * d_model + col;
 
     y[y_idx] = wte[wte_idx] + wpe[wpe_idx];
 }
 
 void CUDABackend::device_embedding_forward(float *y, const float *wte, const float *wpe, const int *input_tokens, int batch_size, int seq_len, int hidden_size)
 {
-    dim3 blockDim(8, 8, 8);
-    dim3 gridDim((batch_size + blockDim.x - 1) / blockDim.x, (seq_len + blockDim.y - 1) / blockDim.y, (hidden_size + blockDim.z - 1) / blockDim.z);
+    const int n = batch_size * seq_len;
 
-    embedding_forward_kernel<<<gridDim, blockDim>>>(
+    dim3 blockDim(32, 32);
+    dim3 gridDim((hidden_size + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);
+
+    embedding_forward_f32_kernel<<<gridDim, blockDim>>>(
         y,
         wte,
         wpe,
         input_tokens,
-        batch_size,
-        seq_len,
+        n,
         hidden_size);
 
     CUDA_KERNEL_CHECK();
@@ -63,45 +62,76 @@ void CUDABackend::device_unembedding_forward(float *y, const float *x, const flo
     CUDA_KERNEL_CHECK();
 }
 
-__global__ void embedding_backward_kernel(
-    float *__restrict__ grad_wte,
+__global__ void wpe_backward_kernel(
     float *__restrict__ grad_wpe,
     const float *__restrict__ grad_y,
-    const int *__restrict__ input_tokens,
     int batch_size,
     int seq_len,
     int hidden_size)
 {
-    const int b = blockIdx.x * blockDim.x + threadIdx.x;
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
     const int t = blockIdx.y * blockDim.y + threadIdx.y;
-    const int c = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (b >= batch_size || t >= seq_len || c >= hidden_size)
+    if (c >= hidden_size || t >= seq_len)
     {
         return;
     }
 
-    const int token_id = input_tokens[b * seq_len + t];
-    const int grad_y_idx = TENSOR_IDX_3D(b, t, c, seq_len, hidden_size);
-    const int grad_wte_idx = TENSOR_IDX_2D(token_id, c, hidden_size);
-    const int grad_wpe_idx = TENSOR_IDX_2D(t, c, hidden_size);
+    // Sum the same positions for all batches
+    float sum = 0.0f;
 
-    atomicAdd(&grad_wte[grad_wte_idx], grad_y[grad_y_idx]);
-    atomicAdd(&grad_wpe[grad_wpe_idx], grad_y[grad_y_idx]);
+    for (int b = 0; b < batch_size; ++b)
+    {
+        sum += grad_y[TENSOR_IDX_3D(b, t, c, seq_len, hidden_size)];
+    }
+
+    // Add final sum
+    grad_wpe[TENSOR_IDX_2D(t, c, hidden_size)] += sum;
+}
+
+__global__ void wte_backward_kernel(
+    float *__restrict__ grad_wte,
+    const float *__restrict__ grad_y,
+    const int *__restrict__ input_tokens,
+    int n,
+    int hidden_size)
+{
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (col >= hidden_size || row >= n)
+    {
+        return;
+    }
+
+    const int token_id = input_tokens[row];
+
+    atomicAdd(&grad_wte[TENSOR_IDX_2D(token_id, col, hidden_size)], grad_y[TENSOR_IDX_2D(row, col, hidden_size)]);
 }
 
 void CUDABackend::device_embedding_backward(float *grad_wte, float *grad_wpe, const float *grad_y, const int *input_tokens, int batch_size, int seq_len, int hidden_size)
 {
-    dim3 blockDim(8, 8, 8);
-    dim3 gridDim((batch_size + blockDim.x - 1) / blockDim.x, (seq_len + blockDim.y - 1) / blockDim.y, (hidden_size + blockDim.z - 1) / blockDim.z);
+    dim3 wpe_blockDim(32, 8);
+    dim3 wpe_gridDim((hidden_size + wpe_blockDim.x - 1) / wpe_blockDim.x, (seq_len + wpe_blockDim.y - 1) / wpe_blockDim.y);
 
-    embedding_backward_kernel<<<gridDim, blockDim>>>(
-        grad_wte,
+    wpe_backward_kernel<<<wpe_gridDim, wpe_blockDim>>>(
         grad_wpe,
         grad_y,
-        input_tokens,
         batch_size,
         seq_len,
+        hidden_size);
+
+    CUDA_KERNEL_CHECK();
+
+    const int n = batch_size * seq_len;
+    dim3 wte_blockDim(32, 8);
+    dim3 wte_gridDim((hidden_size + wte_blockDim.x - 1) / wte_blockDim.x, (n + wte_blockDim.y - 1) / wte_blockDim.y);
+
+    wte_backward_kernel<<<wte_gridDim, wte_blockDim>>>(
+        grad_wte,
+        grad_y,
+        input_tokens,
+        n,
         hidden_size);
 
     CUDA_KERNEL_CHECK();
