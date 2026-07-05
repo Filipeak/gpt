@@ -58,8 +58,10 @@ __global__ void layernorm_residual_fused_forward_f32_v4_kernel(
 
     // Use float4 to process 4 elements at a time for better memory coalescing and performance (assuming d_model is a multiple of 4 and memory alignment allows it)
     float4 *x4 = (float4 *)(x + row_idx * d_model);
-    const float4 *residual4 = residual ? (const float4 *)(residual + row_idx * d_model) : nullptr;
     float4 *y4 = (float4 *)(y + row_idx * d_model);
+    const float4 *residual4 = residual ? (const float4 *)(residual + row_idx * d_model) : nullptr;
+    const float4 *weight4 = (const float4 *)weight;
+    const float4 *bias4 = (const float4 *)bias;
     int num_float4 = d_model / 4;
 
     // Compute local mean and variance using Welford's algorithm
@@ -74,7 +76,7 @@ __global__ void layernorm_residual_fused_forward_f32_v4_kernel(
 
         // Add residual connection
         float4 residual_val4 = residual4 ? residual4[i] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-        val4.x += residual_val4.x; 
+        val4.x += residual_val4.x;
         val4.y += residual_val4.y;
         val4.z += residual_val4.z;
         val4.w += residual_val4.w;
@@ -134,12 +136,14 @@ __global__ void layernorm_residual_fused_forward_f32_v4_kernel(
     for (int i = thread_id; i < num_float4; i += blockDim.x)
     {
         float4 val4 = x4[i];
+        float4 weight_val4 = weight4[i];
+        float4 bias_val4 = bias4[i];
         float4 result;
 
-        result.x = (val4.x - shared_mean) * shared_inv_std * weight[i * 4 + 0] + bias[i * 4 + 0];
-        result.y = (val4.y - shared_mean) * shared_inv_std * weight[i * 4 + 1] + bias[i * 4 + 1];
-        result.z = (val4.z - shared_mean) * shared_inv_std * weight[i * 4 + 2] + bias[i * 4 + 2];
-        result.w = (val4.w - shared_mean) * shared_inv_std * weight[i * 4 + 3] + bias[i * 4 + 3];
+        result.x = (val4.x - shared_mean) * shared_inv_std * weight_val4.x + bias_val4.x;
+        result.y = (val4.y - shared_mean) * shared_inv_std * weight_val4.y + bias_val4.y;
+        result.z = (val4.z - shared_mean) * shared_inv_std * weight_val4.z + bias_val4.z;
+        result.w = (val4.w - shared_mean) * shared_inv_std * weight_val4.w + bias_val4.w;
 
         y4[i] = result;
     }
@@ -269,8 +273,8 @@ __global__ void layernorm_residual_fused_backward_f32_v4_kernel(
     __syncthreads();
 
     // Broadcast the final sums to all threads in the block
-    float final_sum1 = shared_sum1[0];
-    float final_sum2 = shared_sum2[0];
+    float final_sum1_div = shared_sum1[0] / d_model;
+    float final_sum2_div = shared_sum2[0] / d_model;
 
     // Compute final gradients for x
     for (int i = thread_id; i < num_float4; i += blockDim.x)
@@ -292,20 +296,8 @@ __global__ void layernorm_residual_fused_backward_f32_v4_kernel(
         {
             int channel = i * 4 + j;
 
-            grad_x[TENSOR_IDX_2D(row_idx, channel, d_model)] = inv_std * (dy[j] * gamma[channel] - final_sum1 / d_model - normalized[j] * final_sum2 / d_model) + res[j];
+            grad_x[TENSOR_IDX_2D(row_idx, channel, d_model)] = inv_std * (dy[j] * gamma[channel] - final_sum1_div - normalized[j] * final_sum2_div) + res[j];
         }
-    }
-}
-
-__inline__ __device__ void warpReduceLayernormGradients(
-    float &grad_gamma,
-    float &grad_beta)
-{
-#pragma unroll
-    for (int offset = 16; offset > 0; offset /= 2)
-    {
-        grad_gamma += __shfl_down_sync(0xffffffff, grad_gamma, offset);
-        grad_beta += __shfl_down_sync(0xffffffff, grad_beta, offset);
     }
 }
 
@@ -319,63 +311,57 @@ __global__ void layernorm_backward_weights_bias_f32_kernel(
     int n,
     int d_model)
 {
-    const int thread_id = threadIdx.x;
-    const int col = blockIdx.x;
-    const int warp_count = blockDim.x / warpSize;
-    const int warp_id = thread_id / warpSize;
-    const int lane_id = thread_id % warpSize;
-
-    if (col >= d_model)
-    {
-        return;
-    }
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
 
     // Compute local gradients for gamma and beta
     float local_grad_gamma = 0.0f;
     float local_grad_beta = 0.0f;
 
-    for (int row = thread_id; row < n; row += blockDim.x)
+    if (col < d_model)
     {
-        float mean = means[row];
-        float inv_std = vars[row];
+        for (int row = threadIdx.y; row < n; row += blockDim.y)
+        {
+            float mean = means[row];
+            float inv_std = vars[row];
 
-        float x_val = x[TENSOR_IDX_2D(row, col, d_model)];
-        float dy_val = grad_y[TENSOR_IDX_2D(row, col, d_model)];
+            float x_val = x[TENSOR_IDX_2D(row, col, d_model)];
+            float dy_val = grad_y[TENSOR_IDX_2D(row, col, d_model)];
 
-        float normalized = (x_val - mean) * inv_std;
+            float normalized = (x_val - mean) * inv_std;
 
-        local_grad_gamma += dy_val * normalized;
-        local_grad_beta += dy_val;
+            local_grad_gamma += dy_val * normalized;
+            local_grad_beta += dy_val;
+        }
     }
 
-    // Warp reduction for gradients
-    warpReduceLayernormGradients(local_grad_gamma, local_grad_beta);
+    // Use shared memory to accumulate gradients across threads in the block
+    extern __shared__ float smem[];
+    float *shared_grad_gamma = smem;
+    float *shared_grad_beta = smem + blockDim.x * blockDim.y;
 
-    // Reduce sums across the block
-    __shared__ float shared_grad_gamma[32];
-    __shared__ float shared_grad_beta[32];
-
-    if (lane_id == 0)
-    {
-        shared_grad_gamma[warp_id] = local_grad_gamma;
-        shared_grad_beta[warp_id] = local_grad_beta;
-    }
+    shared_grad_gamma[tid] = local_grad_gamma;
+    shared_grad_beta[tid] = local_grad_beta;
 
     __syncthreads();
 
-    // Final reduction by the first warp
-    if (warp_id == 0)
+    // Perform reduction within the block to accumulate gradients for gamma and beta (sum across columns)
+    for (int stride = blockDim.y / 2; stride > 0; stride >>= 1)
     {
-        local_grad_gamma = lane_id < warp_count ? shared_grad_gamma[lane_id] : 0.0f;
-        local_grad_beta = lane_id < warp_count ? shared_grad_beta[lane_id] : 0.0f;
-
-        warpReduceLayernormGradients(local_grad_gamma, local_grad_beta);
-
-        if (lane_id == 0)
+        if (threadIdx.y < stride)
         {
-            grad_gamma[col] = local_grad_gamma;
-            grad_beta[col] = local_grad_beta;
+            shared_grad_gamma[tid] += shared_grad_gamma[tid + stride * blockDim.x];
+            shared_grad_beta[tid] += shared_grad_beta[tid + stride * blockDim.x];
         }
+
+        __syncthreads();
+    }
+
+    // Finally write the accumulated gradients for gamma and beta to global memory
+    if (threadIdx.y == 0 && col < d_model)
+    {
+        grad_gamma[col] += shared_grad_gamma[threadIdx.x];
+        grad_beta[col] += shared_grad_beta[threadIdx.x];
     }
 }
 
@@ -399,7 +385,11 @@ void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float 
 
     CUDA_KERNEL_CHECK();
 
-    layernorm_backward_weights_bias_f32_kernel<<<hidden_size, 256>>>(
+    const dim3 wb_block(32, 32);
+    const dim3 wb_grid((hidden_size + wb_block.x - 1) / wb_block.x);
+    const size_t wb_smem = 2 * wb_block.x * wb_block.y * sizeof(float);
+
+    layernorm_backward_weights_bias_f32_kernel<<<wb_grid, wb_block, wb_smem>>>(
         grad_gamma,
         grad_beta,
         grad_y,

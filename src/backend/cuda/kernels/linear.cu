@@ -65,16 +65,6 @@ void CUDABackend::device_linear_activation_fused_forward(float *y, float *act, c
     CUDA_KERNEL_CHECK();
 }
 
-__inline__ __device__ void warpReduceBiasSum(
-    float &local_sum)
-{
-#pragma unroll
-    for (int offset = warpSize / 2; offset > 0; offset /= 2)
-    {
-        local_sum += __shfl_down_sync(0xffffffff, local_sum, offset);
-    }
-}
-
 // TODO: Consider using cublasSgemv instead of custom kernel
 __global__ void linear_bias_gradient_kernel(
     float *__restrict__ grad_b,
@@ -82,48 +72,43 @@ __global__ void linear_bias_gradient_kernel(
     int n_rows,
     int n_cols)
 {
-    const int thread_id = threadIdx.x;
-    const int col = blockIdx.x;
-    const int warp_count = blockDim.x / warpSize;
-    const int warp_id = thread_id / warpSize;
-    const int lane_id = thread_id % warpSize;
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
 
-    if (col >= n_cols)
-    {
-        return;
-    }
-
+    // Compute local sum for this thread
     float local_sum = 0.0f;
 
-    for (int row = thread_id; row < n_rows; row += blockDim.x)
+    if (col < n_cols)
     {
-        local_sum += grad_y[TENSOR_IDX_2D(row, col, n_cols)];
+        for (int row = threadIdx.y; row < n_rows; row += blockDim.y)
+        {
+            local_sum += grad_y[TENSOR_IDX_2D(row, col, n_cols)];
+        }
     }
 
-    // Reduce within warp
-    warpReduceBiasSum(local_sum);
+    // Use shared memory to accumulate the local sums from all threads in the block
+    extern __shared__ float smem[];
+    float *shared_grad_b = smem;
 
-    // Block reduction using shared memory
-    __shared__ float shared_sum[32]; // Assuming a maximum of 32 warps
-
-    if (lane_id == 0)
-    {
-        shared_sum[warp_id] = local_sum;
-    }
+    shared_grad_b[tid] = local_sum;
 
     __syncthreads();
 
-    // Final reduction by the first warp
-    if (warp_id == 0)
+    // Reduce the shared memory values to compute the final gradient for this column
+    for (int stride = blockDim.y / 2; stride > 0; stride >>= 1)
     {
-        local_sum = lane_id < warp_count ? shared_sum[lane_id] : 0.0f;
-
-        warpReduceBiasSum(local_sum);
-
-        if (lane_id == 0)
+        if (threadIdx.y < stride)
         {
-            grad_b[col] += local_sum;
+            shared_grad_b[tid] += shared_grad_b[tid + stride * blockDim.x];
         }
+
+        __syncthreads();
+    }
+
+    // Finally write the accumulated gradients for bias to global memory
+    if (threadIdx.y == 0 && col < n_cols)
+    {
+        grad_b[col] += shared_grad_b[threadIdx.x];
     }
 }
 
@@ -159,7 +144,11 @@ void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *gr
     CUDA_KERNEL_CHECK();
 
     // grad_b += sum(grad_y, axis=0)
-    linear_bias_gradient_kernel<<<output_size, 256>>>(
+    const dim3 blockDim(32, 32);
+    const dim3 gridDim((output_size + blockDim.x - 1) / blockDim.x);
+    const size_t shared_mem_size = blockDim.x * blockDim.y * sizeof(float);
+
+    linear_bias_gradient_kernel<<<gridDim, blockDim, shared_mem_size>>>(
         grad_b,
         grad_y,
         batch_size * seq_len,
