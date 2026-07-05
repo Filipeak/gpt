@@ -139,7 +139,7 @@ void CPUBackend::device_unembedding_backward(float *grad_x, float *grad_wte, con
     }
 }
 
-void CPUBackend::device_layernorm_forward(float *y, float *means, float *vars, const float *x, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size)
+void CPUBackend::device_layernorm_residual_fused_forward(float *y, float *means, float *vars, float *x, const float *residual, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size)
 {
     for (int b = 0; b < batch_size; ++b)
     {
@@ -150,6 +150,8 @@ void CPUBackend::device_layernorm_forward(float *y, float *means, float *vars, c
 
             for (int h = 0; h < hidden_size; ++h)
             {
+                x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] += residual ? residual[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] : 0.0f; // Add residual connection
+
                 mean += x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)];
             }
             mean /= hidden_size;
@@ -172,7 +174,7 @@ void CPUBackend::device_layernorm_forward(float *y, float *means, float *vars, c
     }
 }
 
-void CPUBackend::device_layernorm_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size)
+void CPUBackend::device_layernorm_residual_fused_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *grad_residual, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size)
 {
     for (int b = 0; b < batch_size; ++b)
     {
@@ -202,6 +204,7 @@ void CPUBackend::device_layernorm_backward(float *grad_x, float *grad_gamma, flo
                 float x_hat = (x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] - mean) * inv_std;
 
                 grad_x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] = inv_std * (grad_y[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] * gamma[h] - (sum1 / hidden_size) - x_hat * (sum2 / hidden_size));
+                grad_x[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] += grad_residual ? grad_residual[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] : 0.0f; // Add residual gradient
             }
         }
     }
@@ -479,34 +482,6 @@ void CPUBackend::device_attention_backward(float *grad_x, float *grad_softmax_ca
 
                     grad_v_head[TENSOR_IDX_2D(s2, d, stride)] = sum;
                 }
-            }
-        }
-    }
-}
-
-void CPUBackend::device_residual_forward(float *current, const float *residual, int batch_size, int seq_len, int hidden_size)
-{
-    for (int b = 0; b < batch_size; ++b)
-    {
-        for (int s = 0; s < seq_len; ++s)
-        {
-            for (int h = 0; h < hidden_size; ++h)
-            {
-                current[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] += residual[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)];
-            }
-        }
-    }
-}
-
-void CPUBackend::device_residual_backward(float *grad_current, const float *grad_residual, int batch_size, int seq_len, int hidden_size)
-{
-    for (int b = 0; b < batch_size; ++b)
-    {
-        for (int s = 0; s < seq_len; ++s)
-        {
-            for (int h = 0; h < hidden_size; ++h)
-            {
-                grad_current[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)] += grad_residual[TENSOR_IDX_3D(b, s, h, seq_len, hidden_size)];
             }
         }
     }

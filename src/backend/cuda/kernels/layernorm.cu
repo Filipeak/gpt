@@ -34,11 +34,12 @@ __inline__ __device__ void warpReduceWelfords(
     }
 }
 
-__global__ void layernorm_forward_f32_v4_kernel(
+__global__ void layernorm_residual_fused_forward_f32_v4_kernel(
     float *__restrict__ y,
     float *__restrict__ means,
     float *__restrict__ vars,
-    const float *__restrict__ x,
+    float *__restrict__ x,
+    const float *__restrict__ residual,
     const float *__restrict__ weight,
     const float *__restrict__ bias,
     int n,
@@ -56,7 +57,8 @@ __global__ void layernorm_forward_f32_v4_kernel(
     }
 
     // Use float4 to process 4 elements at a time for better memory coalescing and performance (assuming d_model is a multiple of 4 and memory alignment allows it)
-    const float4 *x4 = (const float4 *)(x + row_idx * d_model);
+    float4 *x4 = (float4 *)(x + row_idx * d_model);
+    const float4 *residual4 = residual ? (const float4 *)(residual + row_idx * d_model) : nullptr;
     float4 *y4 = (float4 *)(y + row_idx * d_model);
     int num_float4 = d_model / 4;
 
@@ -69,6 +71,15 @@ __global__ void layernorm_forward_f32_v4_kernel(
     for (int i = thread_id; i < num_float4; i += blockDim.x)
     {
         float4 val4 = x4[i];
+
+        // Add residual connection
+        float4 residual_val4 = residual4 ? residual4[i] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        val4.x += residual_val4.x; 
+        val4.y += residual_val4.y;
+        val4.z += residual_val4.z;
+        val4.w += residual_val4.w;
+        x4[i] = val4; // Store the original x values for backward passs
+
         float vals[4] = {val4.x, val4.y, val4.z, val4.w};
 
 #pragma unroll
@@ -134,16 +145,17 @@ __global__ void layernorm_forward_f32_v4_kernel(
     }
 }
 
-void CUDABackend::device_layernorm_forward(float *y, float *means, float *vars, const float *x, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size)
+void CUDABackend::device_layernorm_residual_fused_forward(float *y, float *means, float *vars, float *x, const float *residual, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size)
 {
     const int n = batch_size * seq_len;
     const int block_size = min(1024, hidden_size / 4);
 
-    layernorm_forward_f32_v4_kernel<<<n, block_size>>>(
+    layernorm_residual_fused_forward_f32_v4_kernel<<<n, block_size>>>(
         y,
         means,
         vars,
         x,
+        residual,
         gamma,
         beta,
         n,
@@ -164,11 +176,12 @@ __inline__ __device__ void warpReduceLayernormSums(
     }
 }
 
-__global__ void layernorm_backward_f32_v4_kernel(
+__global__ void layernorm_residual_fused_backward_f32_v4_kernel(
     float *__restrict__ grad_x,
     float *__restrict__ grad_gamma,
     float *__restrict__ grad_beta,
     const float *__restrict__ grad_y,
+    const float *__restrict__ grad_residual,
     const float *__restrict__ x,
     const float *__restrict__ means,
     const float *__restrict__ vars,
@@ -190,6 +203,7 @@ __global__ void layernorm_backward_f32_v4_kernel(
     // Use float4 for vectorized access
     const float4 *x4 = (const float4 *)(x + row_idx * d_model);
     const float4 *grad_y4 = (const float4 *)(grad_y + row_idx * d_model);
+    const float4 *grad_residual4 = grad_residual ? (const float4 *)(grad_residual + row_idx * d_model) : nullptr;
     int num_float4 = d_model / 4;
 
     // Cache mean and variance for this row
@@ -263,6 +277,7 @@ __global__ void layernorm_backward_f32_v4_kernel(
     {
         float4 x_val = x4[i];
         float4 dy_val = grad_y4[i];
+        float4 residual_val = grad_residual4 ? grad_residual4[i] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
         float normalized[4] = {
             (x_val.x - mean) * inv_std,
@@ -271,12 +286,13 @@ __global__ void layernorm_backward_f32_v4_kernel(
             (x_val.w - mean) * inv_std,
         };
         float dy[4] = {dy_val.x, dy_val.y, dy_val.z, dy_val.w};
+        float res[4] = {residual_val.x, residual_val.y, residual_val.z, residual_val.w};
 
         for (int j = 0; j < 4; j++)
         {
             int channel = i * 4 + j;
 
-            grad_x[TENSOR_IDX_2D(row_idx, channel, d_model)] = inv_std * (dy[j] * gamma[channel] - final_sum1 / d_model - normalized[j] * final_sum2 / d_model);
+            grad_x[TENSOR_IDX_2D(row_idx, channel, d_model)] = inv_std * (dy[j] * gamma[channel] - final_sum1 / d_model - normalized[j] * final_sum2 / d_model) + res[j];
         }
     }
 }
@@ -363,16 +379,17 @@ __global__ void layernorm_backward_weights_bias_f32_kernel(
     }
 }
 
-void CUDABackend::device_layernorm_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size)
+void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *grad_residual, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size)
 {
     const int n = batch_size * seq_len;
     const int block_size = min(1024, hidden_size / 4);
 
-    layernorm_backward_f32_v4_kernel<<<n, block_size>>>(
+    layernorm_residual_fused_backward_f32_v4_kernel<<<n, block_size>>>(
         grad_x,
         grad_gamma,
         grad_beta,
         grad_y,
+        grad_residual,
         x,
         means,
         vars,

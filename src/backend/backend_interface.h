@@ -87,6 +87,7 @@ public:
      * - means          [batch_size, seq_len]
      * - vars           [batch_size, seq_len]
      * - x              [batch_size, seq_len, hidden_size]
+     * - residual       [batch_size, seq_len, hidden_size]
      * - gamma          [hidden_size]
      * - beta           [hidden_size]
      *
@@ -95,7 +96,7 @@ public:
      * - vars = var(x, axis=-1)
      * - y = (x - means) / sqrt(vars + eps) * gamma + beta
      */
-    virtual void device_layernorm_forward(float *y, float *means, float *vars, const float *x, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size) = 0;
+    virtual void device_layernorm_residual_fused_forward(float *y, float *means, float *vars, float *x, const float *residual, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size) = 0;
 
     /**
      * Tensors:
@@ -103,6 +104,7 @@ public:
      * - grad_gamma     [hidden_size]
      * - grad_beta      [hidden_size]
      * - grad_y         [batch_size, seq_len, hidden_size]
+     * - grad_residual  [batch_size, seq_len, hidden_size]
      * - x              [batch_size, seq_len, hidden_size]
      * - means          [batch_size, seq_len]
      * - vars           [batch_size, seq_len]
@@ -113,7 +115,7 @@ public:
      * - grad_gamma += sum(grad_y * (x - means) / sqrt(vars + eps), axis=0)
      * - grad_beta += sum(grad_y, axis=0)
      */
-    virtual void device_layernorm_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size) = 0;
+    virtual void device_layernorm_residual_fused_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *grad_residual, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size) = 0;
 
     /**
      * Tensors:
@@ -184,26 +186,6 @@ public:
      * - grad_x = [grad_q | grad_k | grad_v] (concatenated along the last dimension)
      */
     virtual void device_attention_backward(float *grad_x, float *grad_softmax_cache, const float *grad_y, const float *qkv, const float *attn_scores, int batch_size, int seq_len, int hidden_size, int num_heads) = 0;
-
-    /**
-     * Tensors:
-     * - current        [batch_size, seq_len, hidden_size]
-     * - residual       [batch_size, seq_len, hidden_size]
-     *
-     * Performs:
-     * - current = current + residual
-     */
-    virtual void device_residual_forward(float *current, const float *residual, int batch_size, int seq_len, int hidden_size) = 0;
-
-    /**
-     * Tensors:
-     * - grad_current   [batch_size, seq_len, hidden_size]
-     * - grad_residual  [batch_size, seq_len, hidden_size]
-     *
-     * Performs:
-     * - grad_current = grad_current + grad_residual
-     */
-    virtual void device_residual_backward(float *grad_current, const float *grad_residual, int batch_size, int seq_len, int hidden_size) = 0;
 
     /**
      * Tensors:

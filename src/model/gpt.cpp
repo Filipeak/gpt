@@ -432,6 +432,7 @@ void GPT::forward(const int *input_tokens)
     }
 
     float *input = NULL;
+    float *residual = NULL;
 
     // Embedding Layer
     backend_->device_embedding_forward(activations_->x_emb, weights_->wte, weights_->wpe, input_tokens, batch_size_, seq_len_, config_->d_model);
@@ -472,11 +473,9 @@ void GPT::forward(const int *input_tokens)
         float *ffn_down_w = weights_->ffn_down_w + layer * config_->d_ffn * config_->d_model;
         float *ffn_down_b = weights_->ffn_down_b + layer * config_->d_model;
 
-        // Residual pointer
-        float *residual_1 = input;
-
-        // LayerNorm 1
-        backend_->device_layernorm_forward(ln_1_out, ln_1_means, ln_1_vars, input, ln_1_weights, ln_1_bias, batch_size_, seq_len_, config_->d_model);
+        // LayerNorm 1 + Residual
+        backend_->device_layernorm_residual_fused_forward(ln_1_out, ln_1_means, ln_1_vars, input, residual, ln_1_weights, ln_1_bias, batch_size_, seq_len_, config_->d_model);
+        residual = input;
         input = ln_1_out;
 
         // QKV Projection
@@ -491,25 +490,19 @@ void GPT::forward(const int *input_tokens)
         backend_->device_linear_activation_fused_forward(attn_proj, nullptr, input, attn_proj_w, attn_proj_b, false, batch_size_, seq_len_, config_->d_model, config_->d_model);
         input = attn_proj;
 
-        // Residual Connection 1
-        backend_->device_residual_forward(input, residual_1, batch_size_, seq_len_, config_->d_model);
-        float *residual_2 = input;
-
-        // LayerNorm 2
-        backend_->device_layernorm_forward(ln_2_out, ln_2_means, ln_2_vars, input, ln_2_weights, ln_2_bias, batch_size_, seq_len_, config_->d_model);
+        // LayerNorm 2 + Residual
+        backend_->device_layernorm_residual_fused_forward(ln_2_out, ln_2_means, ln_2_vars, input, residual, ln_2_weights, ln_2_bias, batch_size_, seq_len_, config_->d_model);
+        residual = input;
         input = ln_2_out;
 
         // Feedforward Network
         backend_->device_linear_activation_fused_forward(ffn_up, ffn_act, input, ffn_up_w, ffn_up_b, true, batch_size_, seq_len_, config_->d_model, config_->d_ffn);
         backend_->device_linear_activation_fused_forward(ffn_down, nullptr, ffn_act, ffn_down_w, ffn_down_b, false, batch_size_, seq_len_, config_->d_ffn, config_->d_model);
         input = ffn_down;
-
-        // Residual Connection 2
-        backend_->device_residual_forward(input, residual_2, batch_size_, seq_len_, config_->d_model);
     }
 
-    // LayerNorm Final
-    backend_->device_layernorm_forward(activations_->ln_f_out, activations_->ln_f_means, activations_->ln_f_vars, input, weights_->ln_f_w, weights_->ln_f_b, batch_size_, seq_len_, config_->d_model);
+    // LayerNorm Final + Residual
+    backend_->device_layernorm_residual_fused_forward(activations_->ln_f_out, activations_->ln_f_means, activations_->ln_f_vars, input, residual, weights_->ln_f_w, weights_->ln_f_b, batch_size_, seq_len_, config_->d_model);
     input = activations_->ln_f_out;
 
     // Output Projection to logits
@@ -538,6 +531,7 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
     }
 
     float *grad_y = NULL;
+    float *grad_residual = NULL;
 
     // Cross Entropy + Softmax Backward
     backend_->device_cross_entropy_softmax_fused_backward(cache_grads_->softmax_final, activations_->probs, label_tokens, batch_size_, seq_len_, config_->vocab_size, config_->vocab_size_padded);
@@ -550,14 +544,14 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
     // Final LayerNorm Backward
     float *last_layer_ffn_down = activations_->ffn_down + (config_->num_layers - 1) * batch_size_ * seq_len_ * config_->d_model;
 
-    backend_->device_layernorm_backward(cache_grads_->ln_f, weights_grads_->ln_f_w, weights_grads_->ln_f_b, grad_y, last_layer_ffn_down, activations_->ln_f_means, activations_->ln_f_vars, weights_->ln_f_w, batch_size_, seq_len_, config_->d_model);
+    backend_->device_layernorm_residual_fused_backward(cache_grads_->ln_f, weights_grads_->ln_f_w, weights_grads_->ln_f_b, grad_y, nullptr, last_layer_ffn_down, activations_->ln_f_means, activations_->ln_f_vars, weights_->ln_f_w, batch_size_, seq_len_, config_->d_model);
     grad_y = cache_grads_->ln_f;
 
     // Backpropagation through Transformer layers
     for (int layer = config_->num_layers - 1; layer >= 0; layer--)
     {
         // Store the current grad_y for residual connection 2
-        float *residual_2 = grad_y;
+        grad_residual = grad_y;
 
         // Backpropagation through Feedforward Network Down
         float *grad_x_ffn_down = cache_grads_->ffn_down + layer * batch_size_ * seq_len_ * config_->d_ffn;
@@ -586,7 +580,7 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
         backend_->device_linear_backward(grad_x_ffn_up, grad_w_ffn_up, grad_b_ffn_up, grad_y, ln_2_out, ffn_up_w, batch_size_, seq_len_, config_->d_model, config_->d_ffn);
         grad_y = grad_x_ffn_up;
 
-        // Backpropagation through LayerNorm 2
+        // Backpropagation through LayerNorm 2 + Residual Connection 2
         float *grad_x_ln_2 = cache_grads_->ln_2 + layer * batch_size_ * seq_len_ * config_->d_model;
         float *grad_w_ln_2 = weights_grads_->ln_2_w + layer * config_->d_model;
         float *grad_b_ln_2 = weights_grads_->ln_2_b + layer * config_->d_model;
@@ -595,14 +589,11 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
         float *ln_2_gamma = weights_->ln_2_w + layer * config_->d_model;
         float *attn_proj = activations_->attn_proj + layer * batch_size_ * seq_len_ * config_->d_model;
 
-        backend_->device_layernorm_backward(grad_x_ln_2, grad_w_ln_2, grad_b_ln_2, grad_y, attn_proj, ln_2_means, ln_2_vars, ln_2_gamma, batch_size_, seq_len_, config_->d_model);
+        backend_->device_layernorm_residual_fused_backward(grad_x_ln_2, grad_w_ln_2, grad_b_ln_2, grad_y, grad_residual, attn_proj, ln_2_means, ln_2_vars, ln_2_gamma, batch_size_, seq_len_, config_->d_model);
         grad_y = grad_x_ln_2;
 
-        // Backpropagation through Residual Connection 2
-        backend_->device_residual_backward(grad_y, residual_2, batch_size_, seq_len_, config_->d_model);
-
         // Store the current grad_y for residual connection 1
-        float *residual_1 = grad_y;
+        grad_residual = grad_y;
 
         // Backpropagation through Attention Projection
         float *grad_x_attn_proj = cache_grads_->attn_proj + layer * batch_size_ * seq_len_ * config_->d_model;
@@ -633,7 +624,7 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
         backend_->device_linear_backward(grad_x_qkv, grad_w_qkv, grad_b_qkv, grad_y, ln_1_out, qkv_proj_w, batch_size_, seq_len_, config_->d_model, 3 * config_->d_model);
         grad_y = grad_x_qkv;
 
-        // Backpropagation through LayerNorm 1
+        // Backpropagation through LayerNorm 1 + Residual Connection 1
         float *grad_x_ln_1 = cache_grads_->ln_1 + layer * batch_size_ * seq_len_ * config_->d_model;
         float *grad_w_ln_1 = weights_grads_->ln_1_w + layer * config_->d_model;
         float *grad_b_ln_1 = weights_grads_->ln_1_b + layer * config_->d_model;
@@ -642,11 +633,8 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
         float *ln_1_gamma = weights_->ln_1_w + layer * config_->d_model;
         float *ln_1_input = layer == 0 ? activations_->x_emb : activations_->ffn_down + (layer - 1) * batch_size_ * seq_len_ * config_->d_model;
 
-        backend_->device_layernorm_backward(grad_x_ln_1, grad_w_ln_1, grad_b_ln_1, grad_y, ln_1_input, ln_1_means, ln_1_vars, ln_1_gamma, batch_size_, seq_len_, config_->d_model);
+        backend_->device_layernorm_residual_fused_backward(grad_x_ln_1, grad_w_ln_1, grad_b_ln_1, grad_y, grad_residual, ln_1_input, ln_1_means, ln_1_vars, ln_1_gamma, batch_size_, seq_len_, config_->d_model);
         grad_y = grad_x_ln_1;
-
-        // Backpropagation through Residual Connection 1
-        backend_->device_residual_backward(grad_y, residual_1, batch_size_, seq_len_, config_->d_model);
     }
 
     // Embedding Backward

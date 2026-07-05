@@ -9,7 +9,6 @@ add_library(backend_cuda
         kernels/gradient_clip.cu
         kernels/layernorm.cu
         kernels/linear.cu
-        kernels/residual.cu
         kernels/softmax.cu
 )
 
