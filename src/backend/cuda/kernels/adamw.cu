@@ -2,6 +2,7 @@
 #include "utils/cuda_utils.cuh"
 #include "tensor_utils.h"
 
+// TODO: Consider using chunks for multi-tensor apply
 __global__ void adamw_step_f32_v4_kernel(
     float *__restrict__ params,
     const float *__restrict__ g,
