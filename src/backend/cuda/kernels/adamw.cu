@@ -3,7 +3,7 @@
 #include "tensor_utils.h"
 
 // TODO: Consider using chunks for multi-tensor apply
-__global__ void adamw_step_f32_v4_kernel(
+__global__ void adamw_step_fp32_v4_kernel(
     float *__restrict__ params,
     const float *__restrict__ g,
     float *__restrict__ m,
@@ -79,7 +79,7 @@ void CUDABackend::device_adamw_step(float *params, float *g, float *m, float *v,
     float bias_correction1 = 1.0f / (1.0f - powf(beta1, step));
     float bias_correction2 = 1.0f / (1.0f - powf(beta2, step));
 
-    adamw_step_f32_v4_kernel<<<grid_size, block_size>>>(
+    adamw_step_fp32_v4_kernel<<<grid_size, block_size>>>(
         params,
         g,
         m,

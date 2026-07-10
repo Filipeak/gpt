@@ -2,7 +2,7 @@
 #include "utils/cuda_utils.cuh"
 #include "tensor_utils.h"
 
-__global__ void embedding_forward_f32_kernel(
+__global__ void embedding_forward_fp32_kernel(
     float *__restrict__ y,
     const float *__restrict__ wte,
     const float *__restrict__ wpe,
@@ -33,7 +33,7 @@ void CUDABackend::device_embedding_forward(float *y, const float *wte, const flo
     dim3 blockDim(128, 4);
     dim3 gridDim((hidden_size + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);
 
-    embedding_forward_f32_kernel<<<gridDim, blockDim>>>(
+    embedding_forward_fp32_kernel<<<gridDim, blockDim>>>(
         y,
         wte,
         wpe,

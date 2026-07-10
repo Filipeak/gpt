@@ -4,7 +4,7 @@
 
 #define EPSILON 1e-8f
 
-__global__ void cross_entropy_softmax_fused_backward_f32_v4_kernel(
+__global__ void cross_entropy_softmax_fused_backward_fp32_v4_kernel(
     float *__restrict__ grad_x,
     const float *__restrict__ y_softmax,
     const int *__restrict__ tokens_labels,
@@ -63,7 +63,7 @@ void CUDABackend::device_cross_entropy_softmax_fused_backward(float *grad_x, con
     const int block_size = 1024;
     const int grid_size = n;
 
-    cross_entropy_softmax_fused_backward_f32_v4_kernel<<<grid_size, block_size>>>(
+    cross_entropy_softmax_fused_backward_fp32_v4_kernel<<<grid_size, block_size>>>(
         grad_x,
         y_softmax,
         tokens_labels,

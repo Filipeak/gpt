@@ -20,7 +20,7 @@ __inline__ __device__ void warpReduceOnlineSoftmax(
     }
 }
 
-__global__ void softmax_forward_f32_v4_kernel(
+__global__ void softmax_forward_fp32_v4_kernel(
     float *__restrict__ y,
     const float *__restrict__ x,
     int vocab_size,
@@ -113,7 +113,7 @@ void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_siz
 {
     const int n = batch_size * seq_len;
 
-    softmax_forward_f32_v4_kernel<<<n, 1024>>>(
+    softmax_forward_fp32_v4_kernel<<<n, 1024>>>(
         y,
         x,
         vocab_size,

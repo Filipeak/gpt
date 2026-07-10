@@ -34,7 +34,7 @@ __inline__ __device__ void warpReduceWelfords(
     }
 }
 
-__global__ void layernorm_residual_fused_forward_f32_v4_kernel(
+__global__ void layernorm_residual_fused_forward_fp32_v4_kernel(
     float *__restrict__ y,
     float *__restrict__ means,
     float *__restrict__ vars,
@@ -150,7 +150,7 @@ void CUDABackend::device_layernorm_residual_fused_forward(float *y, float *means
     const int n = batch_size * seq_len;
     const int block_size = min(1024, ((hidden_size / 4 + 31) / 32) * 32); // Round up to the nearest multiple of 32 for warp alignment
 
-    layernorm_residual_fused_forward_f32_v4_kernel<<<n, block_size>>>(
+    layernorm_residual_fused_forward_fp32_v4_kernel<<<n, block_size>>>(
         y,
         means,
         vars,
@@ -175,7 +175,7 @@ __inline__ __device__ void warpReduceLayernormSums(
     }
 }
 
-__global__ void layernorm_residual_fused_backward_f32_v4_kernel(
+__global__ void layernorm_residual_fused_backward_fp32_v4_kernel(
     float *__restrict__ grad_x,
     float *__restrict__ grad_gamma,
     float *__restrict__ grad_beta,
@@ -291,7 +291,7 @@ __global__ void layernorm_residual_fused_backward_f32_v4_kernel(
 }
 
 // TODO: Use float4 for vectorized access and better memory coalescing
-__global__ void layernorm_backward_weights_bias_f32_kernel(
+__global__ void layernorm_backward_weights_bias_fp32_kernel(
     float *__restrict__ grad_gamma,
     float *__restrict__ grad_beta,
     const float *__restrict__ grad_y,
@@ -362,7 +362,7 @@ void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float 
     const int n = batch_size * seq_len;
     const int block_size = min(1024, ((hidden_size / 4 + 31) / 32) * 32); // Round up to the nearest multiple of 32 for warp alignment
 
-    layernorm_residual_fused_backward_f32_v4_kernel<<<n, block_size>>>(
+    layernorm_residual_fused_backward_fp32_v4_kernel<<<n, block_size>>>(
         grad_x,
         grad_gamma,
         grad_beta,
@@ -380,7 +380,7 @@ void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float 
     const dim3 wb_grid((hidden_size + wb_block.x - 1) / wb_block.x);
     const size_t wb_smem = 2 * wb_block.x * wb_block.y * sizeof(float);
 
-    layernorm_backward_weights_bias_f32_kernel<<<wb_grid, wb_block, wb_smem>>>(
+    layernorm_backward_weights_bias_fp32_kernel<<<wb_grid, wb_block, wb_smem>>>(
         grad_gamma,
         grad_beta,
         grad_y,
