@@ -116,6 +116,7 @@ int main(int argc, char *argv[])
         });
 
         BENCHMARK_SCOPE_PRINT(ForwardPass, {
+            // TODO: Add KV Cache (prefill + decode)
             gpt.forward(data_manager.device_data());
             backend->device_memcpy_d2h(new_token_logits_cpu, gpt.activations()->logits + (current_size - 1) * config.vocab_size_padded, config.vocab_size_padded * sizeof(float)); // Copy last token logits to host
         });

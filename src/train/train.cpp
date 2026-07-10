@@ -127,9 +127,9 @@ int main(int argc, char *argv[])
 
             BENCHMARK_SCOPE(TrainingStep, {
                 gpt.forward(input_tokens);
+                gpt.backward(input_tokens, label_tokens);
                 float loss = gpt.loss(label_tokens);
                 running_loss += loss;
-                gpt.backward(input_tokens, label_tokens);
             });
 
             running_training_step_time_ms += elapsed_TrainingStep;
