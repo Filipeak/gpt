@@ -148,7 +148,7 @@ void CUDABackend::device_layernorm_residual_fused_forward(float *y, float *means
     CUDA_ASSERT(hidden_size % 4 == 0); // Ensure hidden_size is a multiple of 4 for float4 processing
 
     const int n = batch_size * seq_len;
-    const int block_size = min(1024, hidden_size / 4);
+    const int block_size = min(1024, ((hidden_size / 4 + 31) / 32) * 32); // Round up to the nearest multiple of 32 for warp alignment
 
     layernorm_residual_fused_forward_f32_v4_kernel<<<n, block_size>>>(
         y,
@@ -360,7 +360,7 @@ void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float 
     CUDA_ASSERT(hidden_size % 4 == 0); // Ensure hidden_size is a multiple of 4 for float4 processing
 
     const int n = batch_size * seq_len;
-    const int block_size = min(1024, hidden_size / 4);
+    const int block_size = min(1024, ((hidden_size / 4 + 31) / 32) * 32); // Round up to the nearest multiple of 32 for warp alignment
 
     layernorm_residual_fused_backward_f32_v4_kernel<<<n, block_size>>>(
         grad_x,

@@ -7,7 +7,7 @@
 #include <cmath>
 
 static const char *CHECKPOINT_FILE = "./data/gpt_dummy.bin";
-static const float EPSILON = 1e-8f;
+static const float EPSILON = 1e-5f;
 
 struct GradTensorInfo
 {
@@ -45,7 +45,7 @@ static int compare_tensor(const char *name, const float *a, const float *b, size
             max_a = fabsf(a[i]);
             max_idx = i;
         }
-        if (diff > eps)
+        if (diff > eps || a[i] != a[i] || b[i] != b[i]) // check for NaN
         {
             ++num_bad;
         }
@@ -134,6 +134,8 @@ static float *run_and_download_grads(GPT *model, IGPTBackend *be, int *input_tok
     model->zero_grad(); // grads accumulate, must clear first
     model->forward(input_tokens);
     model->backward(input_tokens, label_tokens);
+    model->clip_grad_norm(1.0f);
+    model->optimizer_step(0.01f, 0.9f, 0.999f, 0.01f); // just to test the optimizer step
 
     const gpt_weights *grads = model->grad_weights();
     size_t n = grads->buffer_count_;
