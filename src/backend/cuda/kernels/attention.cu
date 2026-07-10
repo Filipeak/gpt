@@ -3,249 +3,575 @@
 #include "tensor_utils.h"
 #include <float.h>
 
-__global__ void multiheaded_softmax_masked_fused_kernel(
-    float *__restrict__ x,
-    int n,
-    int seq_len)
+template <const int Br, const int Bc>
+__global__ void flash_attention_2_forward_fp32_kernel(
+    float *__restrict__ y,
+    float *__restrict__ L,
+    const float *__restrict__ qkv,
+    int seq_len,
+    int hidden_size,
+    int num_heads)
 {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    // Locate current thread
+    const int block = blockIdx.x;
+    const int head = blockIdx.y;
+    const int batch = blockIdx.z;
 
-    if (row >= n)
+    const int thread_id = threadIdx.x; // We use flat block of threads
+    const int lane_id = thread_id % warpSize;
+    const int warp_id = thread_id / warpSize;
+    const int warp_count = blockDim.x / warpSize;
+
+    // Calculate helper sizes
+    const int d_head = hidden_size / num_heads;
+    const float inv_sqrt_d_head = rsqrtf((float)d_head);
+    const int part_size_row = Br / warp_count;
+
+    // Prepare shared memory for Q, K, V, O
+    extern __shared__ float shared_mem[];
+
+    __shared__ float rowmax_shared[Br];
+    __shared__ float rowsumexp_shared[Br];
+
+    const int br_size = Br * d_head;
+    const int bc_size = Bc * d_head;
+
+    // TODO: Use vectorized loads for Q, K, V, O to improve memory throughput
+    float *q_shared = shared_mem;
+    float *k_shared = q_shared + br_size;
+    float *v_shared = k_shared + bc_size + d_head; // +d_head for padding to avoid bank conflicts (Bc + 1)
+    float *o_shared = v_shared + bc_size;
+    float *rowcache_shared = o_shared + br_size;
+
+    // Load Q, Reset O, Reset rowmax and rowsumexp
+    const int qkv_q_offset = batch * seq_len * hidden_size * 3 + head * d_head;
+
+    for (int i = thread_id; i < br_size; i += blockDim.x)
     {
-        return;
-    }
+        const int global_idx = block * br_size + i;
+        const int seq_idx = global_idx / d_head;
 
-    const int q_idx = row % seq_len;
-
-    float max_val = -FLT_MAX;
-
-    for (int i = 0; i < seq_len; i++)
-    {
-        if (i > q_idx) // Mask future tokens
+        // Check for out-of-bounds access
+        if (seq_idx >= seq_len)
         {
-            continue;
-        }
-
-        float val = x[TENSOR_IDX_2D(row, i, seq_len)];
-
-        if (val > max_val)
-        {
-            max_val = val;
-        }
-    }
-
-    float sum_exp = 0.0f;
-
-    for (int i = 0; i < seq_len; i++)
-    {
-        if (i > q_idx) // Mask future tokens
-        {
-            continue;
-        }
-
-        sum_exp += expf(x[TENSOR_IDX_2D(row, i, seq_len)] - max_val);
-    }
-
-    for (int i = 0; i < seq_len; i++)
-    {
-        if (i > q_idx) // Mask future tokens
-        {
-            x[TENSOR_IDX_2D(row, i, seq_len)] = 0.0f;
+            q_shared[i] = 0.0f;
+            o_shared[i] = 0.0f;
         }
         else
         {
-            x[TENSOR_IDX_2D(row, i, seq_len)] = expf(x[TENSOR_IDX_2D(row, i, seq_len)] - max_val) / sum_exp;
+            const int head_idx = global_idx % d_head;
+            const int qkv_q_idx = qkv_q_offset + seq_idx * hidden_size * 3 + head_idx;
+
+            q_shared[i] = qkv[qkv_q_idx];
+            o_shared[i] = 0.0f;
+
+            // Initialize rowmax and rowsumexp
+            if (i % d_head == 0) // Only one thread per row initializes
+            {
+                rowmax_shared[i / d_head] = -FLT_MAX;
+                rowsumexp_shared[i / d_head] = 0.0f;
+            }
+        }
+    }
+
+    __syncthreads();
+
+    // Inner loop
+    for (int current_col_block = 0; current_col_block * Bc < Br * (block + 1); current_col_block++) // We do lower left triangle
+    {
+        // Load K and V
+        // TODO: Use async copy (double buffering)
+        for (int j = thread_id; j < bc_size; j += blockDim.x)
+        {
+            const int global_idx = current_col_block * bc_size + j;
+            const int seq_idx = global_idx / d_head;
+
+            // Transpose K for coalesced access
+            const int local_row = j / d_head;
+            const int local_col = j % d_head;
+            const int local_trans_idx = local_col * (Bc + 1) + local_row; // stride of (Bc + 1) to avoid bank conflicts
+
+            // Check for out-of-bounds access
+            if (seq_idx >= seq_len)
+            {
+                k_shared[local_trans_idx] = 0.0f;
+                v_shared[j] = 0.0f;
+            }
+            else
+            {
+                const int head_idx = global_idx % d_head;
+                const int qkv_k_idx = qkv_q_offset + hidden_size + seq_idx * hidden_size * 3 + head_idx;
+
+                k_shared[local_trans_idx] = qkv[qkv_k_idx];
+                v_shared[j] = qkv[qkv_k_idx + hidden_size];
+            }
+        }
+
+        __syncthreads();
+
+        // Compute attention scores online and update O
+        for (int local_row = 0; local_row < part_size_row; local_row++)
+        {
+            const int block_row = warp_id * part_size_row + local_row;
+            const int global_row = block * Br + block_row;
+
+            if (global_row >= seq_len)
+            {
+                continue; // Skip out-of-bounds rows
+            }
+
+            float local_max = -FLT_MAX;
+
+            for (int block_col = lane_id; block_col < Bc; block_col += warpSize)
+            {
+                const int global_col = current_col_block * Bc + block_col;
+
+                float x = 0.0f;
+
+                // Compute dot product only for valid positions (lower triangle)
+                if (global_col <= global_row)
+                {
+                    // Dot product Q*K^T
+                    // TODO: use tensor cores for this (fp16 required)
+                    for (int k = 0; k < d_head; k++)
+                    {
+                        x += q_shared[block_row * d_head + k] * k_shared[k * (Bc + 1) + block_col];
+                    }
+
+                    // Scale
+                    x *= inv_sqrt_d_head;
+                }
+                else
+                {
+                    x = -FLT_MAX; // Mask future tokens
+                }
+
+                // Update cache and local max
+                rowcache_shared[warp_id * Bc + block_col] = x;
+                local_max = fmaxf(local_max, x);
+            }
+
+// Reduce local_max across the warp
+#pragma unroll
+            for (int offset = warpSize / 2; offset > 0; offset >>= 1)
+            {
+                local_max = max(local_max, __shfl_xor_sync(0xffffffff, local_max, offset));
+            }
+
+            // Check new row max and compute correction factor
+            float old_rowmax = rowmax_shared[block_row];
+            float new_rowmax = fmaxf(local_max, old_rowmax);
+            float correction = __expf(old_rowmax - new_rowmax);
+
+            // Compute exp(x - new_rowmax) and accumulate local sumexp
+            float local_sumexp = 0.0f;
+
+            for (int block_col = lane_id; block_col < Bc; block_col += warpSize)
+            {
+                const int idx = warp_id * Bc + block_col;
+                float val = __expf(rowcache_shared[idx] - new_rowmax);
+                local_sumexp += val;
+                rowcache_shared[idx] = val; // Store back for later use
+            }
+
+            __syncwarp();
+
+// Reduce local_sumexp across the warp
+#pragma unroll
+            for (int offset = warpSize / 2; offset > 0; offset >>= 1)
+            {
+                local_sumexp += __shfl_xor_sync(0xffffffff, local_sumexp, offset);
+            }
+
+            // Update rowsumexp with correction factor
+            float old_rowsumexp = rowsumexp_shared[block_row];
+            float new_rowsumexp = old_rowsumexp * correction + local_sumexp;
+
+            // Finally accumulate the output O
+            for (int d = lane_id; d < d_head; d += warpSize)
+            {
+                float acc = o_shared[block_row * d_head + d] * correction;
+
+                // Compute dot product of rowcache and V
+                for (int block_col = 0; block_col < Bc; block_col++)
+                {
+                    acc += rowcache_shared[warp_id * Bc + block_col] * v_shared[block_col * d_head + d];
+                }
+
+                o_shared[block_row * d_head + d] = acc;
+            }
+
+            // Update rowmax and rowsumexp in shared memory
+            if (lane_id == 0)
+            {
+                rowmax_shared[block_row] = new_rowmax;
+                rowsumexp_shared[block_row] = new_rowsumexp;
+            }
+
+            __syncwarp();
+        }
+
+        __syncthreads();
+    }
+
+    // Write O back to global memory
+    for (int i = thread_id; i < br_size; i += blockDim.x)
+    {
+        const int global_idx = block * br_size + i;
+        const int seq_idx = global_idx / d_head;
+
+        // Out-of-bounds check
+        if (seq_idx < seq_len)
+        {
+            const int head_idx = global_idx % d_head;
+            const int y_idx = batch * seq_len * hidden_size + head * d_head + seq_idx * hidden_size + head_idx;
+            const int row_idx = i / d_head;
+
+            y[y_idx] = o_shared[i] / rowsumexp_shared[row_idx]; // Set and normalize by sumexp
+        }
+    }
+
+    // Write L
+    for (int row = thread_id; row < Br; row += blockDim.x)
+    {
+        const int global_row = block * Br + row;
+
+        // Out-of-bounds check
+        if (global_row < seq_len)
+        {
+            const int l_idx = batch * seq_len * num_heads + global_row * num_heads + head;
+
+            L[l_idx] = rowmax_shared[row] + logf(rowsumexp_shared[row]);
         }
     }
 }
 
-void CUDABackend::device_attention_forward(float *y, float *scores, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
+void CUDABackend::device_flash_attention_forward(float *y, float *logsumexp, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
 {
-    const int head_size = hidden_size / num_heads;
+    const int num_warps = 4;
+    const int Br = 16; // must be divisible by num_warps
+    const int Bc = 32; // must be divisible by 32
 
-    // Compute scores = (QK^T) / sqrt(d_k)
-    const float alpha_scores = 1.0f / sqrtf((float)head_size);
-    const float beta_scores = 0.0f;
+    const dim3 block_size(num_warps * 32);
+    const dim3 grid_size((seq_len + Br - 1) / Br, num_heads, batch_size);
+    const int shared_mem_size = ((Br + Bc + Bc + 1 + Br) * (hidden_size / num_heads) + Bc * num_warps) * sizeof(float);
 
-    for (int head = 0; head < num_heads; head++)
+    flash_attention_2_forward_fp32_kernel<Br, Bc><<<grid_size, block_size, shared_mem_size>>>(
+        y,
+        logsumexp,
+        qkv,
+        seq_len,
+        hidden_size,
+        num_heads);
+
+    CUDA_KERNEL_CHECK();
+}
+
+__global__ void flash_attention_precompute_rowsums_kernel(
+    float *__restrict__ D,
+    const float *__restrict__ y,
+    const float *__restrict__ grad_y,
+    int hidden_size,
+    int num_heads)
+{
+    const int global_row = blockIdx.x;
+    const int current_head = blockIdx.y;
+    const int thread_id = threadIdx.x;
+    const int lane_id = thread_id % warpSize;
+
+    const int d_head = hidden_size / num_heads;
+    const int idx = global_row * hidden_size + current_head * d_head;
+
+    // Compute local sum for the current thread
+    float local_sum = 0.0f;
+
+    for (int i = thread_id; i < d_head; i += blockDim.x)
     {
-        const float *q_head = qkv + head * head_size;
-        const float *k_head = qkv + hidden_size + head * head_size;
-        float *scores_head = scores + head * seq_len * seq_len;
-
-        CUBLAS_CHECK(cublasSgemmStridedBatched(
-            cublas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            seq_len, seq_len, head_size,
-            &alpha_scores,
-            k_head, 3 * hidden_size, seq_len * 3 * hidden_size,
-            q_head, 3 * hidden_size, seq_len * 3 * hidden_size,
-            &beta_scores,
-            scores_head, seq_len, num_heads * seq_len * seq_len,
-            batch_size));
-
-        CUDA_KERNEL_CHECK();
+        local_sum += grad_y[idx + i] * y[idx + i];
     }
 
-    // Normalize scores with softmax
-    const int n = batch_size * num_heads * seq_len;
-    const int block_size = 256;
-    const int grid_size = (n + block_size - 1) / block_size;
+// Reduce the sum across the warp
+#pragma unroll
+    for (int offset = warpSize / 2; offset > 0; offset /= 2)
+    {
+        local_sum += __shfl_down_sync(0xffffffff, local_sum, offset);
+    }
 
-    multiheaded_softmax_masked_fused_kernel<<<grid_size, block_size>>>(
-        scores,
-        n,
-        seq_len);
+    // Assuming single warp per block, write the result to global memory
+    if (lane_id == 0)
+    {
+        D[global_row * num_heads + current_head] = local_sum;
+    }
+}
+
+template <const int Br, const int Bc>
+__global__ void flash_attention_2_backward_fp32_kernel(
+    float *__restrict__ grad_x,
+    const float *__restrict__ grad_y,
+    const float *__restrict__ qkv,
+    const float *__restrict__ L,
+    const float *__restrict__ D,
+    int seq_len,
+    int hidden_size,
+    int num_heads)
+{
+    // Locate current thread
+    const int block = blockIdx.x;
+    const int head = blockIdx.y;
+    const int batch = blockIdx.z;
+
+    const int thread_id = threadIdx.x; // We use flat block of threads
+    const int lane_id = thread_id % warpSize;
+    const int warp_id = thread_id / warpSize;
+    const int warp_count = blockDim.x / warpSize;
+
+    // Calculate helper sizes
+    const int d_head = hidden_size / num_heads;
+    const float inv_sqrt_d_head = rsqrtf((float)d_head);
+    const int part_size_col = Bc / warp_count;
+
+    // Prepare shared memory
+    extern __shared__ float shared_mem[];
+
+    const int br_size = Br * d_head;
+    const int bc_size = Bc * d_head;
+
+    // TODO: Use vectorized loads
+    float *q_shared = shared_mem;
+    float *k_shared = q_shared + br_size + d_head; // +d_head for padding to avoid bank conflicts
+    float *v_shared = k_shared + bc_size;
+    float *dO_shared = v_shared + bc_size;
+    float *dK_shared = dO_shared + br_size + d_head; // +d_head for padding to avoid bank conflicts
+    float *dV_shared = dK_shared + bc_size;
+    float *L_shared = dV_shared + bc_size;
+    float *D_shared = L_shared + Br;
+    float *p_shared = D_shared + Br;
+    float *dS_shared = p_shared + Br * warp_count;
+
+    // Load K and V, initialize dK and dV
+    for (int i = thread_id; i < bc_size; i += blockDim.x)
+    {
+        const int global_idx = block * bc_size + i;
+        const int seq_idx = global_idx / d_head;
+
+        if (seq_idx < seq_len)
+        {
+            const int head_idx = global_idx % d_head;
+            const int qkv_k_idx = batch * seq_len * hidden_size * 3 + head * d_head + hidden_size + seq_idx * hidden_size * 3 + head_idx;
+
+            k_shared[i] = qkv[qkv_k_idx];
+            v_shared[i] = qkv[qkv_k_idx + hidden_size];
+        }
+        else
+        {
+            k_shared[i] = 0.0f;
+            v_shared[i] = 0.0f;
+        }
+
+        dK_shared[i] = 0.0f;
+        dV_shared[i] = 0.0f;
+    }
+
+    __syncthreads();
+
+    // Inner loop
+    const int start_idx = (seq_len + Br - 1) / Br - 1;
+
+    for (int current_row_block = start_idx; block * Bc < Br * (current_row_block + 1); current_row_block--) // Start from the bottom, do lower left triangle
+    {
+        // Load Q, O, dO, L, D
+        // TODO: Use async copy (double buffering)
+        for (int j = thread_id; j < br_size; j += blockDim.x)
+        {
+            const int global_idx = current_row_block * br_size + j;
+            const int seq_idx = global_idx / d_head;
+
+            // Transpose for coalesced access
+            const int local_row = j / d_head;
+            const int local_col = j % d_head;
+            const int local_trans_idx = local_col * (Br + 1) + local_row;
+
+            if (seq_idx < seq_len)
+            {
+                const int head_idx = global_idx % d_head;
+                const int qkv_q_idx = batch * seq_len * hidden_size * 3 + head * d_head + seq_idx * hidden_size * 3 + head_idx;
+                const int dO_idx = batch * seq_len * hidden_size + head * d_head + seq_idx * hidden_size + head_idx;
+
+                q_shared[local_trans_idx] = qkv[qkv_q_idx];
+                dO_shared[local_trans_idx] = grad_y[dO_idx];
+
+                if (j % d_head == 0) // Only one thread per row writes L and D
+                {
+                    const int idx = batch * seq_len * num_heads + seq_idx * num_heads + head;
+
+                    L_shared[j / d_head] = L[idx];
+                    D_shared[j / d_head] = D[idx];
+                }
+            }
+            else
+            {
+                q_shared[local_trans_idx] = 0.0f;
+                dO_shared[local_trans_idx] = 0.0f;
+                L_shared[j / d_head] = 0.0f;
+                D_shared[j / d_head] = 0.0f;
+            }
+        }
+
+        // Reset dS
+        for (int i = thread_id; i < Bc * Br; i += blockDim.x)
+        {
+            dS_shared[i] = 0.0f;
+        }
+
+        __syncthreads();
+
+        // Compute intermediate gradients
+        for (int local_col = 0; local_col < part_size_col; local_col++)
+        {
+            const int block_col = warp_id * part_size_col + local_col;
+            const int global_col = block * Bc + block_col;
+
+            if (global_col >= seq_len)
+            {
+                continue; // Skip out-of-bounds columns
+            }
+
+            for (int block_row = lane_id; block_row < Br; block_row += warpSize)
+            {
+                const int global_row = current_row_block * Br + block_row;
+
+                float x = 0.0f;
+
+                if (global_col <= global_row) // Only compute for lower triangle
+                {
+                    // Dot product Q*K^T
+                    // TODO: use tensor cores for this (fp16 required)
+                    for (int k = 0; k < d_head; k++)
+                    {
+                        x += q_shared[k * (Br + 1) + block_row] * k_shared[block_col * d_head + k];
+                    }
+
+                    // Scale
+                    x *= inv_sqrt_d_head;
+
+                    // Compute intermediate gradients and values
+                    float dP = 0.0f;
+
+                    for (int k = 0; k < d_head; k++)
+                    {
+                        dP += dO_shared[k * (Br + 1) + block_row] * v_shared[block_col * d_head + k];
+                    }
+
+                    float p = __expf(x - L_shared[block_row]);
+                    float dS = p * (dP - D_shared[block_row]) * inv_sqrt_d_head;
+
+                    // Save results to shared memory for later use
+                    p_shared[warp_id * Br + block_row] = p;
+                    dS_shared[block_col * Br + block_row] = dS;
+                }
+                else
+                {
+                    p_shared[warp_id * Br + block_row] = 0.0f;
+                    dS_shared[block_col * Br + block_row] = 0.0f;
+                }
+            }
+
+            __syncwarp();
+
+            // Compute dK, dV
+            for (int d = lane_id; d < d_head; d += warpSize)
+            {
+                float dV_acc = 0.0f;
+                float dK_acc = 0.0f;
+
+                for (int block_row = 0; block_row < Br; block_row++)
+                {
+                    dV_acc += p_shared[warp_id * Br + block_row] * dO_shared[d * (Br + 1) + block_row];
+                    dK_acc += dS_shared[block_col * Br + block_row] * q_shared[d * (Br + 1) + block_row];
+                }
+
+                dV_shared[block_col * d_head + d] += dV_acc;
+                dK_shared[block_col * d_head + d] += dK_acc;
+            }
+
+            __syncwarp();
+        }
+
+        __syncthreads();
+
+        // Compute dQ (one atomicAdd per tile)
+        for (int block_row = warp_id; block_row < Br; block_row += warp_count)
+        {
+            const int seq_idx = current_row_block * Br + block_row;
+
+            if (seq_idx < seq_len)
+            {
+                for (int d = lane_id; d < d_head; d += warpSize)
+                {
+                    float dQ_acc = 0.0f;
+
+                    for (int c = 0; c < Bc; c++)
+                    {
+                        dQ_acc += dS_shared[c * Br + block_row] * k_shared[c * d_head + d];
+                    }
+
+                    const int dQ_idx = batch * seq_len * hidden_size * 3 + head * d_head + seq_idx * hidden_size * 3 + d;
+
+                    atomicAdd(&grad_x[dQ_idx], dQ_acc);
+                }
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Copy dK and dV back to global memory
+    for (int i = thread_id; i < bc_size; i += blockDim.x)
+    {
+        const int global_idx = block * bc_size + i;
+        const int seq_idx = global_idx / d_head;
+
+        if (seq_idx < seq_len)
+        {
+            const int head_idx = global_idx % d_head;
+            const int dK_idx = batch * seq_len * hidden_size * 3 + head * d_head + hidden_size + seq_idx * hidden_size * 3 + head_idx;
+
+            grad_x[dK_idx] += dK_shared[i];
+            grad_x[dK_idx + hidden_size] += dV_shared[i];
+        }
+    }
+}
+
+void CUDABackend::device_flash_attention_backward(float *grad_x, float *D_cache, const float *logsumexp, const float *grad_y, const float *y, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
+{
+    CUDA_CHECK(cudaMemset(grad_x, 0, batch_size * seq_len * hidden_size * 3 * sizeof(float)));
+
+    flash_attention_precompute_rowsums_kernel<<<dim3(batch_size * seq_len, num_heads), 32>>>(
+        D_cache,
+        y,
+        grad_y,
+        hidden_size,
+        num_heads);
 
     CUDA_KERNEL_CHECK();
 
-    // Final weighting
-    const float alpha_final = 1.0f;
-    const float beta_final = 0.0f;
+    const int num_warps = 4;
+    const int Br = 32; // must be divisible by 32
+    const int Bc = 16; // must be divisible by num_warps
 
-    for (int head = 0; head < num_heads; head++)
-    {
-        const float *v_head = qkv + hidden_size * 2 + head * head_size;
-        const float *scores_head = scores + head * seq_len * seq_len;
-        float *out_head = y + head * head_size;
+    const dim3 block_size(num_warps * 32);
+    const dim3 grid_size((seq_len + Bc - 1) / Bc, num_heads, batch_size);
+    const int shared_mem_size = ((Br + 1 + Bc + Bc + Br + 1 + Bc + Bc) * (hidden_size / num_heads) + Br + Br + Br * num_warps + Bc * Br) * sizeof(float);
 
-        CUBLAS_CHECK(cublasSgemmStridedBatched(
-            cublas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
-            head_size, seq_len, seq_len,
-            &alpha_final,
-            v_head, 3 * hidden_size, seq_len * 3 * hidden_size,
-            scores_head, seq_len, num_heads * seq_len * seq_len,
-            &beta_final,
-            out_head, hidden_size, seq_len * hidden_size,
-            batch_size));
+    flash_attention_2_backward_fp32_kernel<Br, Bc><<<grid_size, block_size, shared_mem_size>>>(
+        grad_x,
+        grad_y,
+        qkv,
+        logsumexp,
+        D_cache,
+        seq_len,
+        hidden_size,
+        num_heads);
 
-        CUDA_KERNEL_CHECK();
-    }
-}
-
-__global__ void softmax_backward_batched_kernel(
-    float *__restrict__ grad,
-    const float *__restrict__ y,
-    int batch_size,
-    int seq_len,
-    int stride)
-{
-    const int batch = blockIdx.x * blockDim.x + threadIdx.x;
-    const int seq = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (batch >= batch_size || seq >= seq_len)
-    {
-        return;
-    }
-
-    const int current_row_idx = batch * stride + seq * seq_len;
-
-    float dot_product = 0.0f;
-
-    for (int i = 0; i < seq_len; i++)
-    {
-        const int idx = current_row_idx + i;
-        dot_product += grad[idx] * y[idx];
-    }
-
-    for (int i = 0; i < seq_len; i++)
-    {
-        const int idx = current_row_idx + i;
-        grad[idx] = y[idx] * (grad[idx] - dot_product);
-    }
-}
-
-void CUDABackend::device_attention_backward(float *grad_x, float *grad_softmax_cache, const float *grad_y, const float *qkv, const float *attn_scores, int batch_size, int seq_len, int hidden_size, int num_heads)
-{
-    const int head_size = hidden_size / num_heads;
-    const float alpha = 1.0f;
-    const float alpha_d_k = 1.0f / sqrtf((float)head_size);
-    const float beta = 0.0f;
-
-    for (int head = 0; head < num_heads; head++)
-    {
-        // Store intermediate values
-        const float *grad_y_head = grad_y + head * head_size;
-        const float *attn_scores_head = attn_scores + head * seq_len * seq_len;
-        const float *q_head = qkv + hidden_size * 0 + head * head_size;
-        const float *k_head = qkv + hidden_size * 1 + head * head_size;
-        const float *v_head = qkv + hidden_size * 2 + head * head_size;
-        float *grad_softmax_cache_head = grad_softmax_cache + head * seq_len * seq_len;
-
-        // Compute grad_softmax_cache = grad_y * V^T
-        CUBLAS_CHECK(cublasSgemmStridedBatched(
-            cublas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            seq_len, seq_len, head_size,
-            &alpha,
-            v_head, 3 * hidden_size, seq_len * 3 * hidden_size,
-            grad_y_head, hidden_size, seq_len * hidden_size,
-            &beta,
-            grad_softmax_cache_head, seq_len, num_heads * seq_len * seq_len,
-            batch_size));
-
-        CUDA_KERNEL_CHECK();
-
-        // Compute softmax backward for the given cache
-        const dim3 block_size(16, 16);
-        const dim3 grid_size((batch_size + block_size.x - 1) / block_size.x, (seq_len + block_size.y - 1) / block_size.y);
-
-        softmax_backward_batched_kernel<<<grid_size, block_size>>>(
-            grad_softmax_cache_head,
-            attn_scores_head,
-            batch_size,
-            seq_len,
-            num_heads * seq_len * seq_len);
-
-        CUDA_KERNEL_CHECK();
-
-        // Compute grad_q = grad_softmax_cache * K / sqrt(d_k)
-        float *grad_x_head_q = grad_x + hidden_size * 0 + head * head_size;
-
-        CUBLAS_CHECK(cublasSgemmStridedBatched(
-            cublas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
-            head_size, seq_len, seq_len,
-            &alpha_d_k,
-            k_head, 3 * hidden_size, seq_len * 3 * hidden_size,
-            grad_softmax_cache_head, seq_len, num_heads * seq_len * seq_len,
-            &beta,
-            grad_x_head_q, 3 * hidden_size, seq_len * 3 * hidden_size,
-            batch_size));
-
-        CUDA_KERNEL_CHECK();
-
-        // Compute grad_k = grad_softmax_cache^T * Q / sqrt(d_k)
-        float *grad_x_head_k = grad_x + hidden_size * 1 + head * head_size;
-
-        CUBLAS_CHECK(cublasSgemmStridedBatched(
-            cublas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_T,
-            head_size, seq_len, seq_len,
-            &alpha_d_k,
-            q_head, 3 * hidden_size, seq_len * 3 * hidden_size,
-            grad_softmax_cache_head, seq_len, num_heads * seq_len * seq_len,
-            &beta,
-            grad_x_head_k, 3 * hidden_size, seq_len * 3 * hidden_size,
-            batch_size));
-
-        CUDA_KERNEL_CHECK();
-
-        // Compute grad_v = attn_scores^T * grad_y
-        float *grad_x_head_v = grad_x + hidden_size * 2 + head * head_size;
-
-        CUBLAS_CHECK(cublasSgemmStridedBatched(
-            cublas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_T,
-            head_size, seq_len, seq_len,
-            &alpha,
-            grad_y_head, hidden_size, seq_len * hidden_size,
-            attn_scores_head, seq_len, num_heads * seq_len * seq_len,
-            &beta,
-            grad_x_head_v, 3 * hidden_size, seq_len * 3 * hidden_size,
-            batch_size));
-
-        CUDA_KERNEL_CHECK();
-    }
+    CUDA_KERNEL_CHECK();
 }

@@ -161,31 +161,27 @@ public:
     /**
      * Tensors:
      * - y              [batch_size, seq_len, hidden_size]
-     * - scores         [batch_size, num_heads, seq_len, seq_len]
+     * - logsumexp      [batch_size, seq_len, num_heads]
      * - qkv            [batch_size, seq_len, 3 * hidden_size]
      *
      * Performs:
-     * - y = MultiHeadMaskedAttention(qkv, scores, num_heads)
+     * - y = FlashAttention Forward
      */
-    virtual void device_attention_forward(float *y, float *scores, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads) = 0;
+    virtual void device_flash_attention_forward(float *y, float *logsumexp, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads) = 0;
 
     /**
      * Tensors:
      * - grad_x             [batch_size, seq_len, 3 * hidden_size]
-     * - grad_softmax_cache [batch_size, num_heads, seq_len, seq_len]
+     * - D_cache            [batch_size, seq_len, num_heads]
+     * - logsumexp          [batch_size, seq_len, num_heads]
      * - grad_y             [batch_size, seq_len, hidden_size]
+     * - y                  [batch_size, seq_len, hidden_size]
      * - qkv                [batch_size, seq_len, 3 * hidden_size]
-     * - attn_scores        [batch_size, num_heads, seq_len, seq_len]
      *
      * Performs:
-     * - grad_softmax_cache = grad_y * V^T (for each head)
-     * - grad_softmax_cache = softmax_backward(grad_softmax_cache, attn_scores) (for each head)
-     * - grad_v = attn_scores^T * grad_y (for each head)
-     * - grad_q = grad_softmax_cache * K / sqrt(d_k) (for each head)
-     * - grad_k = grad_softmax_cache^T * Q / sqrt(d_k) (for each head)
-     * - grad_x = [grad_q | grad_k | grad_v] (concatenated along the last dimension)
+     * - grad_x = FlashAttention Backward
      */
-    virtual void device_attention_backward(float *grad_x, float *grad_softmax_cache, const float *grad_y, const float *qkv, const float *attn_scores, int batch_size, int seq_len, int hidden_size, int num_heads) = 0;
+    virtual void device_flash_attention_backward(float *grad_x, float *D_cache, const float *logsumexp, const float *grad_y, const float *y, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads) = 0;
 
     /**
      * Tensors:

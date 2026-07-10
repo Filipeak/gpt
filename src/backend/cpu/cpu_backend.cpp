@@ -36,8 +36,8 @@ void CPUBackend::device_fill_normal(float *ptr, float mean, float stddev, size_t
     for (size_t i = 0; i < size; ++i)
     {
         // Simple normal distribution sampling using Box-Muller transform
-        float u1 = static_cast<float>(rand()) / RAND_MAX;
-        float u2 = static_cast<float>(rand()) / RAND_MAX;
+        float u1 = (float)(rand() + 1.0f) / (RAND_MAX + 1.0f); // Avoid log(0)
+        float u2 = (float)(rand()) / RAND_MAX;
         float z0 = sqrtf(-2.0f * logf(u1)) * cosf(2.0f * M_PI * u2);
 
         ptr[i] = z0 * stddev + mean;
@@ -286,46 +286,38 @@ void CPUBackend::device_activation_backward(float *grad_x, const float *grad_y, 
     }
 }
 
-void CPUBackend::device_attention_forward(float *y, float *scores, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
+void CPUBackend::device_flash_attention_forward(float *y, float *logsumexp, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
 {
-    int stride = 3 * hidden_size;
     int head_dim = hidden_size / num_heads;
-    float inv_dk = 1.0f / sqrtf((float)head_dim);
+    int qkv_stride = 3 * hidden_size;
+    float inv_sqrt_d_head = 1.0f / sqrtf((float)head_dim);
+
+    float *scores = (float *)malloc(seq_len * sizeof(float)); // Scores buffer for a single query row
 
     for (int b = 0; b < batch_size; ++b)
     {
         for (int h = 0; h < num_heads; ++h)
         {
-            const float *q_head = &qkv[TENSOR_IDX_3D(b, 0, 0 * hidden_size + h * head_dim, seq_len, stride)];
-            const float *k_head = &qkv[TENSOR_IDX_3D(b, 0, 1 * hidden_size + h * head_dim, seq_len, stride)];
-            const float *v_head = &qkv[TENSOR_IDX_3D(b, 0, 2 * hidden_size + h * head_dim, seq_len, stride)];
-            float *scores_head = &scores[TENSOR_IDX_4D(b, h, 0, 0, num_heads, seq_len, seq_len)];
+            const float *q_head = &qkv[TENSOR_IDX_3D(b, 0, 0 * hidden_size + h * head_dim, seq_len, qkv_stride)];
+            const float *k_head = &qkv[TENSOR_IDX_3D(b, 0, 1 * hidden_size + h * head_dim, seq_len, qkv_stride)];
+            const float *v_head = &qkv[TENSOR_IDX_3D(b, 0, 2 * hidden_size + h * head_dim, seq_len, qkv_stride)];
 
             for (int s1 = 0; s1 < seq_len; ++s1)
             {
-                for (int s2 = 0; s2 < seq_len; ++s2)
+                // Compute scores Q*K^T for valid positions (lower triangle) and track row max
+                float max_score = -FLT_MAX;
+
+                for (int s2 = 0; s2 <= s1; ++s2)
                 {
                     float score = 0.0f;
 
                     for (int d = 0; d < head_dim; ++d)
                     {
-                        score += q_head[TENSOR_IDX_2D(s1, d, stride)] * k_head[TENSOR_IDX_2D(s2, d, stride)];
+                        score += q_head[TENSOR_IDX_2D(s1, d, qkv_stride)] * k_head[TENSOR_IDX_2D(s2, d, qkv_stride)];
                     }
 
-                    scores_head[TENSOR_IDX_2D(s1, s2, seq_len)] = score * inv_dk;
-                }
-
-                // Masking + Softmax over scores for each query position
-                float max_score = -FLT_MAX;
-
-                for (int s2 = 0; s2 < seq_len; ++s2)
-                {
-                    if (s2 > s1) // Mask future positions
-                    {
-                        continue;
-                    }
-
-                    float score = scores_head[TENSOR_IDX_2D(s1, s2, seq_len)];
+                    score *= inv_sqrt_d_head;
+                    scores[s2] = score;
 
                     if (score > max_score)
                     {
@@ -333,154 +325,111 @@ void CPUBackend::device_attention_forward(float *y, float *scores, const float *
                     }
                 }
 
+                // Softmax numerator and denominator
                 float sum_exp = 0.0f;
 
-                for (int s2 = 0; s2 < seq_len; ++s2)
+                for (int s2 = 0; s2 <= s1; ++s2)
                 {
-                    if (s2 > s1) // Mask future positions
-                    {
-                        continue;
-                    }
-
-                    float score = scores_head[TENSOR_IDX_2D(s1, s2, seq_len)];
-                    float exp_score = expf(score - max_score);
-
-                    scores_head[TENSOR_IDX_2D(s1, s2, seq_len)] = exp_score;
-                    sum_exp += exp_score;
+                    scores[s2] = expf(scores[s2] - max_score);
+                    sum_exp += scores[s2];
                 }
 
-                for (int s2 = 0; s2 < seq_len; ++s2)
-                {
-                    if (s2 > s1) // Mask future positions
-                    {
-                        scores_head[TENSOR_IDX_2D(s1, s2, seq_len)] = 0.0f;
-                    }
-                    else
-                    {
-                        scores_head[TENSOR_IDX_2D(s1, s2, seq_len)] /= sum_exp;
-                    }
-                }
-            }
-
-            // Compute output y = softmax(scores) @ V
-            for (int s1 = 0; s1 < seq_len; ++s1)
-            {
+                // Compute output y = softmax(scores) @ V
                 for (int d = 0; d < head_dim; ++d)
                 {
                     float sum = 0.0f;
 
-                    for (int s2 = 0; s2 < seq_len; ++s2)
+                    for (int s2 = 0; s2 <= s1; ++s2)
                     {
-                        sum += scores_head[TENSOR_IDX_2D(s1, s2, seq_len)] * v_head[TENSOR_IDX_2D(s2, d, stride)];
+                        sum += scores[s2] * v_head[TENSOR_IDX_2D(s2, d, qkv_stride)];
                     }
 
-                    y[TENSOR_IDX_3D(b, s1, h * head_dim + d, seq_len, hidden_size)] = sum;
+                    y[TENSOR_IDX_3D(b, s1, h * head_dim + d, seq_len, hidden_size)] = sum / sum_exp;
                 }
+
+                logsumexp[TENSOR_IDX_3D(b, s1, h, seq_len, num_heads)] = max_score + logf(sum_exp);
             }
         }
     }
-}
 
-void CPUBackend::device_attention_backward(float *grad_x, float *grad_softmax_cache, const float *grad_y, const float *qkv, const float *attn_scores, int batch_size, int seq_len, int hidden_size, int num_heads)
+    free(scores);
+}
+#include <stdio.h>
+void CPUBackend::device_flash_attention_backward(float *grad_x, float *D_cache, const float *logsumexp, const float *grad_y, const float *y, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
 {
-    int stride = 3 * hidden_size;
     int head_dim = hidden_size / num_heads;
-    float inv_dk = 1.0f / sqrtf((float)head_dim);
+    int qkv_stride = 3 * hidden_size;
+    float inv_sqrt_d_head = 1.0f / sqrtf((float)head_dim);
+
+    memset(grad_x, 0, (size_t)batch_size * seq_len * qkv_stride * sizeof(float));
+
+    // Precompute rowsums D = sum(grad_y * y, axis=-1) per head
+    for (int b = 0; b < batch_size; ++b)
+    {
+        for (int s = 0; s < seq_len; ++s)
+        {
+            for (int h = 0; h < num_heads; ++h)
+            {
+                float sum = 0.0f;
+
+                for (int d = 0; d < head_dim; ++d)
+                {
+                    int idx = TENSOR_IDX_3D(b, s, h * head_dim + d, seq_len, hidden_size);
+                    sum += grad_y[idx] * y[idx];
+                }
+
+                D_cache[TENSOR_IDX_3D(b, s, h, seq_len, num_heads)] = sum;
+            }
+        }
+    }
 
     for (int b = 0; b < batch_size; ++b)
     {
         for (int h = 0; h < num_heads; ++h)
         {
-            const float *q_head = &qkv[TENSOR_IDX_3D(b, 0, 0 * hidden_size + h * head_dim, seq_len, stride)];
-            const float *k_head = &qkv[TENSOR_IDX_3D(b, 0, 1 * hidden_size + h * head_dim, seq_len, stride)];
-            const float *v_head = &qkv[TENSOR_IDX_3D(b, 0, 2 * hidden_size + h * head_dim, seq_len, stride)];
-            const float *scores_head = &attn_scores[TENSOR_IDX_4D(b, h, 0, 0, num_heads, seq_len, seq_len)];
+            const float *q_head = &qkv[TENSOR_IDX_3D(b, 0, 0 * hidden_size + h * head_dim, seq_len, qkv_stride)];
+            const float *k_head = &qkv[TENSOR_IDX_3D(b, 0, 1 * hidden_size + h * head_dim, seq_len, qkv_stride)];
+            const float *v_head = &qkv[TENSOR_IDX_3D(b, 0, 2 * hidden_size + h * head_dim, seq_len, qkv_stride)];
             const float *grad_y_head = &grad_y[TENSOR_IDX_3D(b, 0, h * head_dim, seq_len, hidden_size)];
-            float *grad_softmax_cache_head = &grad_softmax_cache[TENSOR_IDX_4D(b, h, 0, 0, num_heads, seq_len, seq_len)];
 
-            // Compute grad_softmax_cache = grad_y @ V^T
+            float *grad_q_head = &grad_x[TENSOR_IDX_3D(b, 0, 0 * hidden_size + h * head_dim, seq_len, qkv_stride)];
+            float *grad_k_head = &grad_x[TENSOR_IDX_3D(b, 0, 1 * hidden_size + h * head_dim, seq_len, qkv_stride)];
+            float *grad_v_head = &grad_x[TENSOR_IDX_3D(b, 0, 2 * hidden_size + h * head_dim, seq_len, qkv_stride)];
+
             for (int s1 = 0; s1 < seq_len; ++s1)
             {
-                for (int s2 = 0; s2 < seq_len; ++s2)
+                float L_val = logsumexp[TENSOR_IDX_3D(b, s1, h, seq_len, num_heads)];
+                float D_val = D_cache[TENSOR_IDX_3D(b, s1, h, seq_len, num_heads)];
+                
+                for (int s2 = 0; s2 <= s1; ++s2) // Only valid positions (lower triangle)
                 {
-                    float sum = 0.0f;
+                    // Recompute attention probability p = exp(q*k^T / sqrt(d) - L)
+                    float score = 0.0f;
 
                     for (int d = 0; d < head_dim; ++d)
                     {
-                        sum += grad_y_head[TENSOR_IDX_2D(s1, d, hidden_size)] * v_head[TENSOR_IDX_2D(s2, d, stride)];
+                        score += q_head[TENSOR_IDX_2D(s1, d, qkv_stride)] * k_head[TENSOR_IDX_2D(s2, d, qkv_stride)];
                     }
 
-                    grad_softmax_cache_head[TENSOR_IDX_2D(s1, s2, seq_len)] = sum;
-                }
-            }
+                    float p = expf(score * inv_sqrt_d_head - L_val);
 
-            // Softmax backward
-            for (int s1 = 0; s1 < seq_len; ++s1)
-            {
-                float dot_product = 0.0f;
+                    // dP = dO * V^T
+                    float dP = 0.0f;
 
-                for (int s2 = 0; s2 < seq_len; ++s2)
-                {
-                    dot_product += grad_softmax_cache_head[TENSOR_IDX_2D(s1, s2, seq_len)] * scores_head[TENSOR_IDX_2D(s1, s2, seq_len)];
-                }
-
-                for (int s2 = 0; s2 < seq_len; ++s2)
-                {
-                    grad_softmax_cache_head[TENSOR_IDX_2D(s1, s2, seq_len)] = scores_head[TENSOR_IDX_2D(s1, s2, seq_len)] * (grad_softmax_cache_head[TENSOR_IDX_2D(s1, s2, seq_len)] - dot_product);
-                }
-            }
-
-            // Compute grad_q = grad_softmax_cache @ K / sqrt(d_k)
-            float *grad_q_head = &grad_x[TENSOR_IDX_3D(b, 0, 0 * hidden_size + h * head_dim, seq_len, stride)];
-
-            for (int s1 = 0; s1 < seq_len; ++s1)
-            {
-                for (int d = 0; d < head_dim; ++d)
-                {
-                    float sum = 0.0f;
-
-                    for (int s2 = 0; s2 < seq_len; ++s2)
+                    for (int d = 0; d < head_dim; ++d)
                     {
-                        sum += grad_softmax_cache_head[TENSOR_IDX_2D(s1, s2, seq_len)] * k_head[TENSOR_IDX_2D(s2, d, stride)];
+                        dP += grad_y_head[TENSOR_IDX_2D(s1, d, hidden_size)] * v_head[TENSOR_IDX_2D(s2, d, qkv_stride)];
                     }
 
-                    grad_q_head[TENSOR_IDX_2D(s1, d, stride)] = sum * inv_dk;
-                }
-            }
+                    float dS = p * (dP - D_val) * inv_sqrt_d_head;
 
-            // Compute grad_k = grad_softmax_cache^T @ Q / sqrt(d_k)
-            float *grad_k_head = &grad_x[TENSOR_IDX_3D(b, 0, 1 * hidden_size + h * head_dim, seq_len, stride)];
-
-            for (int s2 = 0; s2 < seq_len; ++s2)
-            {
-                for (int d = 0; d < head_dim; ++d)
-                {
-                    float sum = 0.0f;
-
-                    for (int s1 = 0; s1 < seq_len; ++s1)
+                    // Accumulate grad_q, grad_k, grad_v
+                    for (int d = 0; d < head_dim; ++d)
                     {
-                        sum += grad_softmax_cache_head[TENSOR_IDX_2D(s1, s2, seq_len)] * q_head[TENSOR_IDX_2D(s1, d, stride)];
+                        grad_q_head[TENSOR_IDX_2D(s1, d, qkv_stride)] += dS * k_head[TENSOR_IDX_2D(s2, d, qkv_stride)];
+                        grad_k_head[TENSOR_IDX_2D(s2, d, qkv_stride)] += dS * q_head[TENSOR_IDX_2D(s1, d, qkv_stride)];
+                        grad_v_head[TENSOR_IDX_2D(s2, d, qkv_stride)] += p * grad_y_head[TENSOR_IDX_2D(s1, d, hidden_size)];
                     }
-
-                    grad_k_head[TENSOR_IDX_2D(s2, d, stride)] = sum * inv_dk;
-                }
-            }
-
-            // Compute grad_v = scores^T @ grad_y
-            float *grad_v_head = &grad_x[TENSOR_IDX_3D(b, 0, 2 * hidden_size + h * head_dim, seq_len, stride)];
-
-            for (int s2 = 0; s2 < seq_len; ++s2)
-            {
-                for (int d = 0; d < head_dim; ++d)
-                {
-                    float sum = 0.0f;
-
-                    for (int s1 = 0; s1 < seq_len; ++s1)
-                    {
-                        sum += scores_head[TENSOR_IDX_2D(s1, s2, seq_len)] * grad_y_head[TENSOR_IDX_2D(s1, d, hidden_size)];
-                    }
-
-                    grad_v_head[TENSOR_IDX_2D(s2, d, stride)] = sum;
                 }
             }
         }

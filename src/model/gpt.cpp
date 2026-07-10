@@ -114,7 +114,7 @@ gpt_activations::gpt_activations(IGPTBackend *backend, const gpt_config *config,
     sizes[2] = L * B * T;         // ln_1_means
     sizes[3] = L * B * T;         // ln_1_vars
     sizes[4] = L * B * T * 3 * D; // qkv_out
-    sizes[5] = L * B * H * T * T; // attn_scores
+    sizes[5] = L * B * T * H;     // attn_logsumexp
     sizes[6] = L * B * T * D;     // attn_out
     sizes[7] = L * B * T * D;     // attn_proj
     sizes[8] = L * B * T * D;     // ln_2_out
@@ -135,7 +135,7 @@ gpt_activations::gpt_activations(IGPTBackend *backend, const gpt_config *config,
         &this->ln_1_means,
         &this->ln_1_vars,
         &this->qkv_out,
-        &this->attn_scores,
+        &this->attn_logsumexp,
         &this->attn_out,
         &this->attn_proj,
         &this->ln_2_out,
@@ -183,7 +183,7 @@ gpt_cache_x_grads::gpt_cache_x_grads(IGPTBackend *backend, const gpt_config *con
     sizes[0] = L * B * T * D;     // ln_1
     sizes[1] = L * B * T * D;     // qkv_proj
     sizes[2] = L * B * T * 3 * D; // attn
-    sizes[3] = L * B * H * T * T; // attn_softmax
+    sizes[3] = L * B * T * H;     // attn_d_helper
     sizes[4] = L * B * T * D;     // attn_proj
     sizes[5] = L * B * T * D;     // ln_2
     sizes[6] = L * B * T * D;     // ffn_up
@@ -197,7 +197,7 @@ gpt_cache_x_grads::gpt_cache_x_grads(IGPTBackend *backend, const gpt_config *con
         &this->ln_1,
         &this->qkv_proj,
         &this->attn,
-        &this->attn_softmax,
+        &this->attn_d_helper,
         &this->attn_proj,
         &this->ln_2,
         &this->ffn_up,
@@ -452,7 +452,7 @@ void GPT::forward(const int *input_tokens)
         float *qkv_w = weights_->qkv_proj_w + layer * config_->d_model * 3 * config_->d_model;
         float *qkv_b = weights_->qkv_proj_b + layer * 3 * config_->d_model;
 
-        float *attn_scores = activations_->attn_scores + layer * batch_size_ * config_->num_heads * seq_len_ * seq_len_;
+        float *attn_logsumexp = activations_->attn_logsumexp + layer * batch_size_ * seq_len_ * config_->num_heads;
         float *attn_out = activations_->attn_out + layer * batch_size_ * seq_len_ * config_->d_model;
 
         float *attn_proj = activations_->attn_proj + layer * batch_size_ * seq_len_ * config_->d_model;
@@ -483,7 +483,7 @@ void GPT::forward(const int *input_tokens)
         input = qkv_out;
 
         // Attention Mechanism
-        backend_->device_attention_forward(attn_out, attn_scores, input, batch_size_, seq_len_, config_->d_model, config_->num_heads);
+        backend_->device_flash_attention_forward(attn_out, attn_logsumexp, input, batch_size_, seq_len_, config_->d_model, config_->num_heads);
         input = attn_out;
 
         // Attention Projection
@@ -607,11 +607,11 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
 
         // Backpropagation through Attention Mechanism
         float *grad_x_attn = cache_grads_->attn + layer * batch_size_ * seq_len_ * 3 * config_->d_model;
-        float *grad_x_attn_softmax = cache_grads_->attn_softmax + layer * batch_size_ * config_->num_heads * seq_len_ * seq_len_;
+        float *attn_d_helper = cache_grads_->attn_d_helper + layer * batch_size_ * seq_len_ * config_->num_heads;
+        float *attn_logsumexp = activations_->attn_logsumexp + layer * batch_size_ * seq_len_ * config_->num_heads;
         float *qkv_out = activations_->qkv_out + layer * batch_size_ * seq_len_ * 3 * config_->d_model;
-        float *attn_scores = activations_->attn_scores + layer * batch_size_ * config_->num_heads * seq_len_ * seq_len_;
 
-        backend_->device_attention_backward(grad_x_attn, grad_x_attn_softmax, grad_y, qkv_out, attn_scores, batch_size_, seq_len_, config_->d_model, config_->num_heads);
+        backend_->device_flash_attention_backward(grad_x_attn, attn_d_helper, attn_logsumexp, grad_y, attn_out, qkv_out, batch_size_, seq_len_, config_->d_model, config_->num_heads);
         grad_y = grad_x_attn;
 
         // Backpropagation through QKV Projection

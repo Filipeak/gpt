@@ -71,10 +71,10 @@ struct gpt_activations
     float *ln_1_means; // LayerNorm 1 means [num_layers, B, T]
     float *ln_1_vars;  // LayerNorm 1 variances [num_layers, B, T]
 
-    float *qkv_out;     // QKV concatenated [num_layers, B, T, 3 * d_model]
-    float *attn_scores; // Attention scores [num_layers, B, num_heads, T, T]
-    float *attn_out;    // Attention concatenated outputs [num_layers, B, T, d_model]
-    float *attn_proj;   // Attention projection outputs [num_layers, B, T, d_model]
+    float *qkv_out;        // QKV concatenated [num_layers, B, T, 3 * d_model]
+    float *attn_logsumexp; // Attention logsumexp [num_layers, B, T, num_heads]
+    float *attn_out;       // Attention concatenated outputs [num_layers, B, T, d_model]
+    float *attn_proj;      // Attention projection outputs [num_layers, B, T, d_model]
 
     float *ln_2_out;   // LayerNorm 2 outputs [num_layers, B, T, d_model]
     float *ln_2_means; // LayerNorm 2 means [num_layers, B, T]
@@ -106,15 +106,15 @@ struct gpt_activations
 struct gpt_cache_x_grads
 {
     // Transformer layers
-    float *ln_1;         // [num_layers, B, T, d_model]
-    float *qkv_proj;     // [num_layers, B, T, d_model]
-    float *attn;         // [num_layers, B, T, 3 * d_model]
-    float *attn_softmax; // [num_layers, B, num_heads, T, T]
-    float *attn_proj;    // [num_layers, B, T, d_model]
-    float *ln_2;         // [num_layers, B, T, d_model]
-    float *ffn_up;       // [num_layers, B, T, d_model]
-    float *ffn_act;      // [num_layers, B, T, d_ffn]
-    float *ffn_down;     // [num_layers, B, T, d_ffn]
+    float *ln_1;          // [num_layers, B, T, d_model]
+    float *qkv_proj;      // [num_layers, B, T, d_model]
+    float *attn;          // [num_layers, B, T, 3 * d_model]
+    float *attn_d_helper; // [num_layers, B, T, num_heads]
+    float *attn_proj;     // [num_layers, B, T, d_model]
+    float *ln_2;          // [num_layers, B, T, d_model]
+    float *ffn_up;        // [num_layers, B, T, d_model]
+    float *ffn_act;       // [num_layers, B, T, d_ffn]
+    float *ffn_down;      // [num_layers, B, T, d_ffn]
 
     // Final
     float *ln_f;          // [B, T, d_model]
@@ -131,6 +131,7 @@ struct gpt_cache_x_grads
 };
 
 // Main GPT class
+// TODO: Other dtypes, mixed precision (fp16, bf16)
 class GPT
 {
 public:
