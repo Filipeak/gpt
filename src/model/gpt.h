@@ -139,14 +139,14 @@ public:
     ~GPT();
 
     void init(float mean, float stddev);
-    bool load_checkpoint(const char *filename); // TODO: Load also model config, not only binary weights
+    bool load_checkpoint(const char *filename); // TODO: Load also model config, adamw memory, not only binary weights
     bool save_checkpoint(const char *filename) const;
 
     void set_size(int batch_size, int seq_len);
 
     void forward(const int *input_tokens);
     void backward(const int *input_tokens, const int *label_tokens);
-    void clip_grad_norm(float max_norm);
+    void unscale_and_clip_grads(float max_norm, int accum_steps);
     void optimizer_step(float learning_rate, float beta1, float beta2, float decay);
     void zero_grad();
     float loss(const int *label_tokens);

@@ -400,7 +400,7 @@ void CPUBackend::device_flash_attention_backward(float *grad_x, float *D_cache, 
             {
                 float L_val = logsumexp[TENSOR_IDX_3D(b, s1, h, seq_len, num_heads)];
                 float D_val = D_cache[TENSOR_IDX_3D(b, s1, h, seq_len, num_heads)];
-                
+
                 for (int s2 = 0; s2 <= s1; ++s2) // Only valid positions (lower triangle)
                 {
                     // Recompute attention probability p = exp(q*k^T / sqrt(d) - L)
@@ -531,24 +531,27 @@ void CPUBackend::device_adamw_step(float *params, float *g, float *m, float *v, 
     }
 }
 
-void CPUBackend::device_clip_grad_norm(float *g, int size, float max_norm)
+void CPUBackend::device_scale_and_clip_grad(float *g, int size, float max_norm, int accum_steps)
 {
     float norm = 0.0f;
 
     for (int i = 0; i < size; ++i)
     {
+        g[i] /= accum_steps; // Scale the gradient by the number of accumulation steps
         norm += g[i] * g[i];
     }
 
     norm = sqrtf(norm);
 
-    if (norm > max_norm)
+    if (norm <= max_norm)
     {
-        float scale = max_norm / norm;
+        return; // No clipping needed
+    }
 
-        for (int i = 0; i < size; ++i)
-        {
-            g[i] *= scale;
-        }
+    float scale = max_norm / (norm + 1e-6f);
+
+    for (int i = 0; i < size; ++i)
+    {
+        g[i] *= scale;
     }
 }

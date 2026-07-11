@@ -34,7 +34,7 @@ public:
     void device_cross_entropy_softmax_fused_backward(float *grad_x, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size, int vocab_size_padded) override;
     void device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size_padded) override;
     void device_adamw_step(float *params, float *g, float *m, float *v, int size, float lr, float beta1, float beta2, float eps, float weight_decay, int step) override;
-    void device_clip_grad_norm(float *g, int size, float max_norm) override;
+    void device_scale_and_clip_grad(float *g, int size, float max_norm, int accum_steps) override;
 
 private:
     cublasContext *cublas_handle_;

@@ -134,7 +134,7 @@ static float *run_and_download_grads(GPT *model, IGPTBackend *be, int *input_tok
     model->zero_grad(); // grads accumulate, must clear first
     model->forward(input_tokens);
     model->backward(input_tokens, label_tokens);
-    model->clip_grad_norm(1.0f);
+    model->unscale_and_clip_grads(1.0f, 1);
     model->optimizer_step(0.01f, 0.9f, 0.999f, 0.01f); // just to test the optimizer step
 
     const gpt_weights *grads = model->grad_weights();

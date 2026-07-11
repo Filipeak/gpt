@@ -641,9 +641,9 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
     backend_->device_embedding_backward(weights_grads_->wte, weights_grads_->wpe, grad_y, input_tokens, batch_size_, seq_len_, config_->d_model);
 }
 
-void GPT::clip_grad_norm(float max_norm)
+void GPT::unscale_and_clip_grads(float max_norm, int accum_steps)
 {
-    backend_->device_clip_grad_norm(weights_grads_->buffer_, weights_grads_->buffer_count_, max_norm);
+    backend_->device_scale_and_clip_grad(weights_grads_->buffer_, weights_grads_->buffer_count_, max_norm, accum_steps);
 }
 
 void GPT::optimizer_step(float learning_rate, float beta1, float beta2, float decay)

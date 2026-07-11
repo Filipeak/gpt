@@ -137,10 +137,10 @@ int main(int argc, char *argv[])
 
             if (++micro % batch_accum_steps == 0)
             {
-                float lr = get_lr_cosine_decay(global_steps++, 100, total_steps, 1.2e-3f, 1.2e-4f);
+                float lr = get_lr_cosine_decay(global_steps++, 100, total_steps, 6e-4f, 6e-5f);
 
-                gpt.clip_grad_norm(1.0f);
-                gpt.optimizer_step(lr, 0.9f, 0.999f, 0.1f);
+                gpt.unscale_and_clip_grads(1.0f, batch_accum_steps);
+                gpt.optimizer_step(lr, 0.9f, 0.95f, 0.1f);
                 gpt.zero_grad();
 
                 LOG_INFO("Epoch %d/%d  |  Batch %d/%d  |  Avg Loss: %.6f  |  Avg Time: %.2f ms", epoch + 1, epochs, loader.current_batch(), loader.total_batches(), running_loss / running_count, running_training_step_time_ms / running_count);

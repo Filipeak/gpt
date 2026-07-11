@@ -232,7 +232,7 @@ public:
      * - g              [size]
      *
      * Performs:
-     * - Gradient clipping by norm
+     * - Gradient clipping by norm + Scaling for gradient accumulation
      */
-    virtual void device_clip_grad_norm(float *g, int size, float max_norm) = 0;
+    virtual void device_scale_and_clip_grad(float *g, int size, float max_norm, int accum_steps) = 0;
 };
