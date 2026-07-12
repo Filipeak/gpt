@@ -1,3 +1,4 @@
 .vscode
 build
 res
+__pycache__

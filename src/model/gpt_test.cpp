@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <cmath>
 
-static const char *CHECKPOINT_FILE = "./data/gpt_dummy.bin";
+static const char *TOKENS_FILE = "./data/gpt_dummy_tokens.bin";
+static const char *WEIGHTS_FILE = "./data/gpt_dummy_weights.bin";
+static const char *REF_GRADS_FILE = "./data/gpt_dummy_ref_gradients.bin";
 static const float EPSILON = 1e-5f;
 
 struct GradTensorInfo
@@ -14,19 +16,6 @@ struct GradTensorInfo
     const char *name;
     size_t size;
 };
-
-static int file_exists(const char *path)
-{
-    FILE *f = fopen(path, "rb");
-
-    if (f)
-    {
-        fclose(f);
-        return 1;
-    }
-
-    return 0;
-}
 
 static int compare_tensor(const char *name, const float *a, const float *b, size_t size, float eps)
 {
@@ -129,13 +118,41 @@ static void build_grad_table(const gpt_config *c, GradTensorInfo *t)
     t[15].size = D;
 }
 
-static float *run_and_download_grads(GPT *model, IGPTBackend *be, int *input_tokens, int *label_tokens, size_t *count_out)
+static int compare_models(GradTensorInfo *tensor_info, size_t count, const float *grads_1, const float *grads_2, const char *label_1, const char *label_2, float eps)
+{
+    LOG_INFO("-- weight gradient (%s vs %s) comparison (eps=%.1e) --", label_1, label_2, eps);
+
+    int passed = 0;
+    int failed = 0;
+    size_t offset = 0;
+
+    for (int i = 0; i < GPT_WEIGHTS_PARAMS_COUNT; ++i)
+    {
+        if (compare_tensor(tensor_info[i].name, grads_1 + offset, grads_2 + offset, tensor_info[i].size, eps))
+        {
+            ++passed;
+        }
+        else
+        {
+            ++failed;
+        }
+
+        offset += tensor_info[i].size;
+    }
+
+    LOG_INFO("--- %d passed, %d failed ---", passed, failed);
+
+    return failed;
+}
+
+static float *run_and_download_grads(GPT *model, IGPTBackend *be, int *input_tokens, int *label_tokens)
 {
     model->zero_grad(); // grads accumulate, must clear first
     model->forward(input_tokens);
     model->backward(input_tokens, label_tokens);
-    model->unscale_and_clip_grads(1.0f, 1);
-    model->optimizer_step(0.01f, 0.9f, 0.999f, 0.01f); // just to test the optimizer step
+    float loss = model->loss(label_tokens); // compute loss for logging, but ignore the return value
+
+    LOG_INFO("Loss: %.6f", loss);
 
     const gpt_weights *grads = model->grad_weights();
     size_t n = grads->buffer_count_;
@@ -143,7 +160,6 @@ static float *run_and_download_grads(GPT *model, IGPTBackend *be, int *input_tok
     float *out = (float *)malloc(n * sizeof(float));
     be->device_memcpy_d2h(out, grads->buffer_, n * sizeof(float));
 
-    *count_out = n;
     return out;
 }
 
@@ -163,99 +179,89 @@ int main()
 
     LOG_INFO("GPT full forward/backward CPU-vs-CUDA test start");
 
-    // Dummy tokens: random list of size context + 1.
-    // input = tokens[0:context], labels = tokens[1:context+1].
-    srand(1234);
-
+    // Get tokens from file
     int *tokens = (int *)malloc((context + 1) * sizeof(int));
 
-    for (int i = 0; i < context + 1; ++i)
     {
-        tokens[i] = rand() % config.vocab_size;
+        FILE *fp = fopen(TOKENS_FILE, "rb");
+
+        if (fp)
+        {
+            fread(tokens, sizeof(int), context + 1, fp);
+            fclose(fp);
+            LOG_INFO("Read %d input tokens from %s.", context + 1, TOKENS_FILE);
+        }
+        else
+        {
+            LOG_ERROR("Could not open %s for reading tokens.", TOKENS_FILE);
+        }
     }
 
+    // Run CPU
     LOG_INFO("Running CPU model for reference gradients...");
 
     CPUBackend cpu_backend;
     GPT cpu_model(&cpu_backend, &config, true);
-
-    // Create the checkpoint if it does not exist yet.
-    if (!file_exists(CHECKPOINT_FILE))
-    {
-        LOG_INFO("Checkpoint %s not found, creating dummy model.", CHECKPOINT_FILE);
-
-        cpu_model.init(0.0f, 0.02f);
-        cpu_model.save_checkpoint(CHECKPOINT_FILE);
-    }
-
-    cpu_model.load_checkpoint(CHECKPOINT_FILE);
+    cpu_model.load_checkpoint(WEIGHTS_FILE);
     cpu_model.set_size(batch_size, context);
 
     int *cpu_input = upload_tokens(&cpu_backend, tokens, context + 1);
     int *cpu_labels = cpu_input + 1; // labels are just the input shifted by 1
-
-    size_t cpu_count = 0;
-    float *cpu_grads = run_and_download_grads(&cpu_model, &cpu_backend, cpu_input, cpu_labels, &cpu_count);
+    float *cpu_grads = run_and_download_grads(&cpu_model, &cpu_backend, cpu_input, cpu_labels);
 
     cpu_backend.device_free(cpu_input);
 
     LOG_INFO("CPU weight gradients downloaded.");
 
-    // Now run the same model on CUDA and compare the gradients.
+    // RUN CUDA
     LOG_INFO("Running CUDA model for comparison...");
 
     CUDABackend cuda_backend;
     GPT cuda_model(&cuda_backend, &config, true);
-    cuda_model.load_checkpoint(CHECKPOINT_FILE);
+    cuda_model.load_checkpoint(WEIGHTS_FILE);
     cuda_model.set_size(batch_size, context);
 
     int *cuda_input = upload_tokens(&cuda_backend, tokens, context + 1);
     int *cuda_labels = cuda_input + 1; // labels are just the input shifted by 1
-
-    size_t cuda_count = 0;
-    float *cuda_grads = run_and_download_grads(&cuda_model, &cuda_backend, cuda_input, cuda_labels, &cuda_count);
+    float *cuda_grads = run_and_download_grads(&cuda_model, &cuda_backend, cuda_input, cuda_labels);
 
     cuda_backend.device_free(cuda_input);
 
+    // Get PyTorch gradients from file
+    size_t pytorch_grads_size = cuda_model.grad_weights()->buffer_count_;
+    float *pytorch_grads = (float *)malloc(pytorch_grads_size * sizeof(float));
+
+    {
+        FILE *fp = fopen(REF_GRADS_FILE, "rb");
+
+        if (fp)
+        {
+            fread(pytorch_grads, sizeof(float), pytorch_grads_size, fp);
+            fclose(fp);
+            LOG_INFO("Read %d weights from %s.", (int)pytorch_grads_size, REF_GRADS_FILE);
+        }
+        else
+        {
+            LOG_ERROR("Could not open %s for reading weights.", REF_GRADS_FILE);
+        }
+    }
+
+    // Run comparison
     LOG_INFO("CUDA weight gradients downloaded.");
 
     LOG_INFO("Comparing gradients...");
-    LOG_INFO("-- weight gradient comparison (eps=%.1e) --", EPSILON);
+
+    GradTensorInfo table[GPT_WEIGHTS_PARAMS_COUNT];
+    build_grad_table(&config, table); // Note: This assumes the the exact same order and no padding is used in the gpt_weights buffer.
 
     int failed = 0;
+    failed += compare_models(table, GPT_WEIGHTS_PARAMS_COUNT, cpu_grads, cuda_grads, "CPU", "CUDA", EPSILON);
+    failed += compare_models(table, GPT_WEIGHTS_PARAMS_COUNT, cuda_grads, pytorch_grads, "CUDA", "PyTorch", EPSILON);
 
-    if (cpu_count != cuda_count)
-    {
-        LOG_ERROR("gradient buffer size mismatch (cpu=%zu, cuda=%zu)", cpu_count, cuda_count);
-        failed = 1;
-    }
-    else
-    {
-        GradTensorInfo table[GPT_WEIGHTS_PARAMS_COUNT];
-        build_grad_table(&config, table); // Note: This assumes the the exact same order and no padding is used in the gpt_weights buffer.
-
-        int passed = 0;
-        size_t offset = 0;
-
-        for (int i = 0; i < GPT_WEIGHTS_PARAMS_COUNT; ++i)
-        {
-            if (compare_tensor(table[i].name, cpu_grads + offset, cuda_grads + offset, table[i].size, EPSILON))
-            {
-                ++passed;
-            }
-            else
-            {
-                ++failed;
-            }
-
-            offset += table[i].size;
-        }
-
-        LOG_INFO("--- %d passed, %d failed ---", passed, failed);
-    }
-
+    // Cleanup
     free(cpu_grads);
     free(cuda_grads);
+    free(pytorch_grads);
     free(tokens);
 
     LOG_INFO("GPT full forward/backward CPU-vs-CUDA test finished.");
