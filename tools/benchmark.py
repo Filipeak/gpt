@@ -1,5 +1,7 @@
 import argparse
+import array
 import time
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -53,12 +55,21 @@ def bench_training(model, cfg, batch, seq, steps, warmup, device):
     return batch * seq / per_step, per_step * 1000.0
 
 
+def load_prompt(path, device):
+    tokens = array.array("H")
+
+    with open(path, "rb") as f:
+        tokens.frombytes(f.read())
+
+    return torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
+
+
 @torch.no_grad()
-def bench_inference(model, cfg, prompt_len, gen_tokens, warmup, device):
+def bench_inference(model, cfg, prompt, gen_tokens, warmup, device):
     model.eval()
 
     def generate():
-        seq = torch.randint(0, cfg.vocab_size, (1, prompt_len), device=device)
+        seq = prompt.clone()
         first_token_ms = None
 
         for i in range(gen_tokens):
@@ -98,6 +109,7 @@ def main():
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--gen-tokens", type=int, default=40)
+    ap.add_argument("--prompt", type=Path, default=Path(__file__).resolve().parent.parent / "res" / "prompt.bin")
     ap.add_argument("--compile", action="store_true")
     args = ap.parse_args()
 
@@ -118,8 +130,9 @@ def main():
     tok_s, ms = bench_training(model, REAL_CFG, args.batch_size, args.seq_len, args.steps, args.warmup, device)
     print(f"training : {tok_s:>10.0f} tok/s   ({ms:.2f} ms/step, fwd+bwd, no AdamW)")
 
-    inf_tok_s, ttft = bench_inference(model, REAL_CFG, prompt_len=8, gen_tokens=args.gen_tokens, warmup=2, device=device)
-    print(f"inference: {inf_tok_s:>10.1f} tok/s   (TTFT {ttft:.2f} ms, no KV cache)")
+    prompt = load_prompt(args.prompt, device)
+    inf_tok_s, ttft = bench_inference(model, REAL_CFG, prompt, gen_tokens=args.gen_tokens, warmup=2, device=device)
+    print(f"inference: {inf_tok_s:>10.1f} tok/s   (prompt {prompt.size(1)} tokens from {args.prompt.name}, +{args.gen_tokens} generated, TTFT {ttft:.2f} ms, no KV cache)")
 
 
 if __name__ == "__main__":

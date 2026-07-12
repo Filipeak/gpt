@@ -68,16 +68,16 @@ data/          dataset download + GPT-2 BPE tokenizer bridge (Python)
 
 Default model configuration (`src/train/train.cpp`):
 
-| Hyperparameter          | Value                         |
-| ----------------------- | ----------------------------- |
-| Max sequence length     | 256                           |
-| Vocabulary size         | 50,257 (padded to 50,304)     |
-| Transformer layers      | 12                            |
-| Attention heads         | 12                            |
-| Model dimension         | 768                           |
-| Feed-forward dimension  | 3,072                         |
-| Parameters              | ~124M                         |
-| Precision               | fp32                          |
+| Hyperparameter         | Value                     |
+| ---------------------- | ------------------------- |
+| Max sequence length    | 256                       |
+| Vocabulary size        | 50,257 (padded to 50,304) |
+| Transformer layers     | 12                        |
+| Attention heads        | 12                        |
+| Model dimension        | 768                       |
+| Feed-forward dimension | 3,072                     |
+| Parameters             | ~124M                     |
+| Precision              | fp32                      |
 
 ## Build & run
 
@@ -162,13 +162,15 @@ The hand-written training step is a little faster than eager PyTorch and on par 
 
 **Inference** - single stream, greedy, no KV cache on either side:
 
-| Implementation                | Tokens/sec |
-| ----------------------------- | ---------- |
-| This repo (hand-written CUDA) | ~110       |
-| PyTorch 2.x eager             | ~195       |
-| PyTorch 2.x + `torch.compile` | ~335       |
+| Implementation                | Tokens/sec (wall clock) | Tokens/sec (GPU busy) |
+| ----------------------------- | ----------------------- | --------------------- |
+| This repo (hand-written CUDA) | ~130                    | ~240                  |
+| PyTorch 2.x eager             | ~180                    | ~230                  |
+| PyTorch 2.x + `torch.compile` | ~240                    | ~250                  |
 
-Inference is where the repo trails: it re-runs the full forward for every token and is fp32 with no fused decode path. A KV cache and mixed precision (see the roadmap) are the levers there.
+At batch 1 all three land within ~10% of each other (GPU time), and all far below this GPU's memory-bandwidth ceiling of ~725 tok/s (360 GB/s ÷ ~0.5 GB of fp32 weights read per token) for RTX 3060.
+
+**Note:** While at training kernel launches overhead stays at <1% of the total step time, at inference with batch 1 it is major and cannot be ignored.
 
 ## Correctness
 

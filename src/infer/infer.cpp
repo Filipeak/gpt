@@ -98,6 +98,8 @@ int main(int argc, char *argv[])
     }
 
     float *new_token_logits_cpu = (float *)malloc(config.vocab_size_padded * sizeof(float));
+    const int max_warmup_steps = 5;
+    int remaining_warmup_steps = max_warmup_steps;
 
     // Prepare stats
     float ttft_ms = 0.0f; // Time to first token
@@ -121,17 +123,26 @@ int main(int argc, char *argv[])
             backend->device_memcpy_d2h(new_token_logits_cpu, gpt.activations()->logits + (current_size - 1) * config.vocab_size_padded, config.vocab_size_padded * sizeof(float)); // Copy last token logits to host
         });
 
-        BENCHMARK_SCOPE_PRINT(Sample, {
-            data_manager.push_token(sampler.sample(new_token_logits_cpu));
-        })
-
-        if (i == 0)
+        if (remaining_warmup_steps > 0)
         {
-            ttft_ms = elapsed_ForwardPass + elapsed_Sample;
+            --remaining_warmup_steps;
+            --i;
+            LOG_INFO("Warmup step %d/%d completed.", max_warmup_steps - remaining_warmup_steps, max_warmup_steps);
         }
+        else
+        {
+            BENCHMARK_SCOPE_PRINT(Sample, {
+                data_manager.push_token(sampler.sample(new_token_logits_cpu));
+            })
 
-        avg_forward_time_ms += elapsed_ForwardPass;
-        avg_sample_time_ms += elapsed_Sample;
+            if (i == 0)
+            {
+                ttft_ms = elapsed_ForwardPass + elapsed_Sample;
+            }
+
+            avg_forward_time_ms += elapsed_ForwardPass;
+            avg_sample_time_ms += elapsed_Sample;
+        }
 
         LOG_INFO("----------------------");
     }
