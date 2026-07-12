@@ -168,7 +168,7 @@ The hand-written training step is a little faster than eager PyTorch and on par 
 | PyTorch 2.x eager             | ~180                    | ~230                  |
 | PyTorch 2.x + `torch.compile` | ~240                    | ~250                  |
 
-At batch 1 all three land within ~10% of each other (GPU time), and all far below this GPU's memory-bandwidth ceiling of ~725 tok/s (360 GB/s ÷ ~0.5 GB of fp32 weights read per token) for RTX 3060.
+At batch 1 all three land within ~10% of each other (GPU time), and all far below this GPU's memory-bandwidth ceiling of ~725 tok/s (360 GB/s / ~0.5 GB of fp32 weights read per token) for RTX 3060.
 
 **Note:** While at training kernel launches overhead stays at <1% of the total step time, at inference with batch 1 it is major and cannot be ignored.
 
