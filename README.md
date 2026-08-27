@@ -172,6 +172,23 @@ At batch 1 all three land within ~10% of each other (GPU time), and all far belo
 
 **Note:** While at training kernel launches overhead stays at <1% of the total step time, at inference with batch 1 it is major and cannot be ignored.
 
+**Inference vs. `llama.cpp`** - same checkpoint, converted to GGUF and run through `llama.cpp`'s CUDA backend (build 10075, `GGML_CUDA_GRAPHS=ON`), not a different downloaded model. The checkpoint's flat buffer layout (`tools/gpt_reference.py`) turned out to be bit-exact HuggingFace GPT-2 `Conv1D` layout, so the conversion needed no weight transposes. Correctness was verified by greedy-decoding the same prompt on both engines and diffing token IDs (exact match):
+
+| Implementation                          | Tokens/sec | ms/token |
+| ---------------------------------------- | ---------- | -------- |
+| This repo, forward only                  | ~141       | 7.09     |
+| This repo, forward + sample (real cost)  | ~77        | 12.94    |
+| `llama.cpp`, F32, full GPU offload       | 450        | 2.22     |
+| `llama.cpp`, Q8_0, full GPU offload      | 854        | 1.17     |
+| `llama.cpp`, Q4_K_M, full GPU offload    | 886        | 1.13     |
+| `llama.cpp`, F32, CPU only               | 77         | 13.00    |
+
+Measured against the ~725 tok/s bandwidth ceiling noted above, `llama.cpp`'s F32 result reaches ~62% of it - the closest anything in these benchmarks gets. This repo's own forward pass reaches ~19% of that ceiling, and the combined forward+sample number ~11%.
+
+The standout number is the last row: `llama.cpp` running on CPU alone matches this repo's combined GPU forward+sample throughput. GPU compute isn't the bottleneck - the nsys profile above already shows ~4.19 ms of GPU-busy time per forward, on par with PyTorch eager. What's missing is what `llama.cpp` gets from CUDA graphs and a persistent execution plan: backing the fixed per-token overhead out of the table above (measured time minus bandwidth-bound weight-read time) gives ~0.85 ms across all three quantization levels, against the ~3.1 ms of GPU idle time measured here. Same gap the nsys findings already pointed at - persistent activation buffers, fused bias epilogues, CUDA graphs - now with an external number for how much headroom is actually on the table.
+
+The other standout number: this repo's sampler (`token_sampler.cpp`, `qsort` over all 50,257 logits every token) costs 5.85 ms/token on its own, more than `llama.cpp`'s entire per-token budget at F32. Replacing the full sort with an `nth_element`-based top-k is a bigger lever than any single GPU-side fix above.
+
 ## Correctness
 
 Two gradient checks guard the backward pass. `tools/prep_grad.py` builds the same small model in PyTorch, runs one forward and backward, and writes out the weights, the input tokens, and PyTorch's autograd gradients. `gpt_test` loads those, runs its own forward and backward on both the CPU and CUDA backends, and compares every weight-gradient tensor element by element - each must agree to within `1e-5` (`src/model/gpt_test.cpp`, `tools/prep_grad.py`).
