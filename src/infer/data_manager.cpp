@@ -70,26 +70,35 @@ bool DataManager::load_data(const char *data_path, int additional_tokens)
         return false;
     }
 
-    data_size_ = count + additional_tokens;
-    current_index_ = count; // Start after the loaded data
-    data_ = (int *)malloc(data_size_ * sizeof(int));
-    backend_->device_malloc((void **)&d_data_, data_size_ * sizeof(int));
+    std::vector<int> tokens(tmp_data, tmp_data + count);
+    free(tmp_data);
 
-    if (!data_)
+    if (!load_tokens(tokens, additional_tokens))
     {
-        LOG_ERROR("Could not allocate memory for training data. (final)");
-        free(tmp_data);
         return false;
     }
 
-    for (size_t i = 0; i < data_size_; ++i)
+    LOG_INFO("Loaded %zu tokens from %s", count, data_path);
+    return true;
+}
+
+bool DataManager::load_tokens(const std::vector<int> &tokens, int additional_tokens)
+{
+    data_size_ = tokens.size() + additional_tokens;
+    current_index_ = tokens.size(); // Start after the loaded data
+    data_ = (int *)malloc(data_size_ * sizeof(int));
+
+    if (!data_)
     {
-        data_[i] = (int)tmp_data[i];
+        LOG_ERROR("Could not allocate memory for tokens.");
+        return false;
     }
 
-    free(tmp_data);
+    backend_->device_malloc((void **)&d_data_, data_size_ * sizeof(int));
 
-    LOG_INFO("Loaded %zu tokens from %s", data_size_, data_path);
+    memcpy(data_, tokens.data(), tokens.size() * sizeof(int));
+    memset(data_ + tokens.size(), 0, additional_tokens * sizeof(int));
+
     return true;
 }
 

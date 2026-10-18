@@ -62,8 +62,9 @@ src/
       kernels/            hand-written kernels (attention, layernorm, …)
   model/       GPT forward/backward, weight & activation buffers
   train/       training loop, data loader, LR schedule
+  tokenizer/   GPT-2 byte-level BPE tokenizer (C++)
   infer/       autoregressive generation, token sampler
-data/          dataset download + GPT-2 BPE tokenizer bridge (Python)
+data/          dataset download, tokenizer bridge + vocab export (Python)
 ```
 
 Default model configuration (`src/train/train.cpp`):
@@ -101,7 +102,10 @@ cmake --build build --config Release
 ```bash
 python data/tiny_shakespeare.py
 python data/tokenizer.py encode-file data/tiny_shakespeare.txt data/tiny_shakespeare.bin
+python data/tokenizer.py export-vocab data/gpt2_vocab.bin
 ```
+
+`export-vocab` writes GPT-2's 50,257 tokens as raw bytes for the C++ tokenizer that `gpt_infer` uses.
 
 ### 3. Verify the kernels (gradient checks vs CPU and PyTorch)
 
@@ -114,6 +118,15 @@ python tools/prep_grad.py
 ```
 
 Expected: two tables of 16 `[ PASS ]` tensors (CPU vs CUDA, then CUDA vs PyTorch), each ending in `--- 16 passed, 0 failed ---`.
+
+The tokenizer is checked the same way: `prep_tokenizer.py` writes test text together with tiktoken's token ids for it (edge cases, every code point in Unicode planes 0-3, and the whole tiny-shakespeare corpus), and `tokenizer_test` encodes the same text in C++ and compares.
+
+```bash
+python tools/prep_tokenizer.py
+./build/src/tokenizer/tokenizer_test
+```
+
+Expected: `311/311 cases match tiktoken` and `--- 326 passed, 0 failed ---`.
 
 ### 4. Train
 
@@ -129,22 +142,18 @@ Expected: two tables of 16 `[ PASS ]` tensors (CPU vs CUDA, then CUDA vs PyTorch
 
 ### 5. Generate
 
-First, create `res/prompt.txt` with your prompt text, then run:
-
 ```bash
-python data/tokenizer.py encode-file res/prompt.txt res/prompt.bin && \
 ./build/src/infer/gpt_infer \
     --model ./data/gpt_124M.bin \
-    --input ./res/prompt.bin \
-    --output ./res/output.bin \
+    --prompt "ROMEO:" \
     --max-tokens 40 \
     --temperature 1.0 \
     --top-k 50 \
     --top-p 0.9 \
-    --seed 42 && \
-python data/tokenizer.py decode-file res/output.bin res/output.txt && \
-cat res/output.txt
+    --seed 42
 ```
+
+The prompt is tokenized in C++ with the vocab from step 2 (`--vocab`, default `./data/gpt2_vocab.bin`), and the text is printed token by token as it is generated. The prompt plus generated tokens must fit in the 256-token context. `--input <file>` takes a prompt already tokenized by `data/tokenizer.py encode-file` instead of `--prompt`, `--output <file>` saves all tokens as a `.bin`, and `--verbose` prints per-step timings.
 
 ## Benchmarks
 

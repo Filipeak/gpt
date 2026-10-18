@@ -1,5 +1,6 @@
 add_subdirectory(core)
 add_subdirectory(backend)
 add_subdirectory(model)
+add_subdirectory(tokenizer)
 add_subdirectory(train)
 add_subdirectory(infer)
