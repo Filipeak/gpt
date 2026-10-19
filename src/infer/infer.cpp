@@ -3,7 +3,7 @@
 #include "data_manager.h"
 #include "token_sampler.h"
 #include "logger.h"
-#include "benchmark.h"
+#include "timer.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -132,19 +132,22 @@ int main(int argc, char *argv[])
     {
         int current_size = data_manager.current_size();
 
-        BENCHMARK_SCOPE(Preparation, {
-            gpt.set_size(1, current_size);
-        });
+        // Each span ends with a sync, so the host clock covers the GPU work too.
+        Timer timer;
+        gpt.set_size(1, current_size);
+        backend->device_synchronize();
+        float preparation_ms = timer.elapsed_ms();
 
-        BENCHMARK_SCOPE(ForwardPass, {
-            gpt.forward(data_manager.device_data());
-            backend->device_memcpy_d2h(new_token_logits_cpu, gpt.activations()->logits + (current_size - 1) * config.vocab_size_padded, config.vocab_size_padded * sizeof(float)); // Copy last token logits to host
-        });
+        timer.reset();
+        gpt.forward(data_manager.device_data());
+        backend->device_memcpy_d2h(new_token_logits_cpu, gpt.activations()->logits + (current_size - 1) * config.vocab_size_padded, config.vocab_size_padded * sizeof(float)); // Copy last token logits to host
+        backend->device_synchronize();
+        float forward_ms = timer.elapsed_ms();
 
         if (verbose)
         {
-            LOG_INFO("Preparation took %.2f ms", elapsed_Preparation);
-            LOG_INFO("ForwardPass took %.2f ms", elapsed_ForwardPass);
+            LOG_INFO("Preparation took %.2f ms", preparation_ms);
+            LOG_INFO("Forward pass took %.2f ms", forward_ms);
         }
 
         if (remaining_warmup_steps > 0)
@@ -159,26 +162,24 @@ int main(int argc, char *argv[])
         }
         else
         {
-            int token = 0;
-
-            BENCHMARK_SCOPE(Sample, {
-                token = sampler.sample(new_token_logits_cpu);
-            });
+            timer.reset();
+            int token = sampler.sample(new_token_logits_cpu);
+            float sample_ms = timer.elapsed_ms();
 
             data_manager.push_token(token);
 
             if (verbose)
             {
-                LOG_INFO("Sample took %.2f ms", elapsed_Sample);
+                LOG_INFO("Sample took %.2f ms", sample_ms);
             }
 
             if (i == 0)
             {
-                ttft_ms = elapsed_ForwardPass + elapsed_Sample;
+                ttft_ms = forward_ms + sample_ms;
             }
 
-            avg_forward_time_ms += elapsed_ForwardPass;
-            avg_sample_time_ms += elapsed_Sample;
+            avg_forward_time_ms += forward_ms;
+            avg_sample_time_ms += sample_ms;
         }
     }
 

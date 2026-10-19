@@ -150,7 +150,8 @@ static float *run_and_download_grads(GPT *model, IGPTBackend *be, int *input_tok
     model->zero_grad(); // grads accumulate, must clear first
     model->forward(input_tokens);
     model->backward(input_tokens, label_tokens);
-    float loss = model->loss(label_tokens); // compute loss for logging, but ignore the return value
+    model->accumulate_loss(label_tokens);
+    float loss = model->read_and_reset_loss(); // only logged, not compared
 
     LOG_INFO("Loss: %.6f", loss);
 

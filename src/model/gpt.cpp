@@ -243,6 +243,7 @@ GPT::GPT(IGPTBackend *backend, const gpt_config *config, bool use_grad) : backen
     }
 
     backend_->device_malloc((void **)&loss_cache_, sizeof(float));
+    backend_->device_memset(loss_cache_, 0, sizeof(float));
 
     LOG_INFO("GPT model created with use_grad=%d.", use_grad_);
 }
@@ -689,24 +690,39 @@ void GPT::zero_grad()
     }
 }
 
-float GPT::loss(const int *label_tokens)
+void GPT::accumulate_loss(const int *label_tokens)
 {
     if (!use_grad_)
     {
-        LOG_ERROR("loss() called but use_grad is false.");
-        return -1.0f;
+        LOG_ERROR("accumulate_loss() called but use_grad is false.");
+        return;
     }
 
     if (!activations_)
     {
-        LOG_ERROR("activations not allocated. Call set_size() and forward() before loss().");
-        return -1.0f;
+        LOG_ERROR("activations not allocated. Call set_size() and forward() before accumulate_loss().");
+        return;
     }
 
     backend_->device_cross_entropy_loss(loss_cache_, activations_->probs, label_tokens, batch_size_, seq_len_, config_->vocab_size_padded);
+    loss_count_++;
+}
 
-    float loss_value;
-    backend_->device_memcpy_d2h(&loss_value, loss_cache_, sizeof(float));
+float GPT::read_and_reset_loss()
+{
+    if (loss_count_ == 0)
+    {
+        LOG_ERROR("read_and_reset_loss() called before accumulate_loss().");
+        return -1.0f;
+    }
 
-    return loss_value;
+    float loss_sum;
+    backend_->device_synchronize();
+    backend_->device_memcpy_d2h(&loss_sum, loss_cache_, sizeof(float));
+    backend_->device_memset(loss_cache_, 0, sizeof(float));
+
+    float mean_loss = loss_sum / loss_count_;
+    loss_count_ = 0;
+
+    return mean_loss;
 }

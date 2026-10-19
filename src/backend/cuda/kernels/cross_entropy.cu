@@ -103,8 +103,6 @@ __global__ void cross_entropy_compute_kernel(
 
 void CUDABackend::device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size_padded)
 {
-    CUDA_CHECK(cudaMemset(loss, 0, sizeof(float)));
-
     const int n = batch_size * seq_len;
     const int block_size = 256;
     const int grid_size = (n + block_size - 1) / block_size;

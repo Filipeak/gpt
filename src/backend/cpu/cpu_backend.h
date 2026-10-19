@@ -13,6 +13,7 @@ public:
     void device_fill_const(float *ptr, float value, size_t size) override;
     void device_memcpy_d2h(void *dst, const void *src, size_t size) override;
     void device_memcpy_h2d(void *dst, const void *src, size_t size) override;
+    void device_synchronize() override;
     void device_embedding_forward(float *y, const float *wte, const float *wpe, const int *input_tokens, int batch_size, int seq_len, int hidden_size) override;
     void device_unembedding_forward(float *y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded) override;
     void device_embedding_backward(float *grad_wte, float *grad_wpe, const float *grad_y, const int *input_tokens, int batch_size, int seq_len, int hidden_size) override;

@@ -149,7 +149,12 @@ public:
     void unscale_and_clip_grads(float max_norm, int accum_steps);
     void optimizer_step(float learning_rate, float beta1, float beta2, float decay);
     void zero_grad();
-    float loss(const int *label_tokens);
+
+    // Adds this batch's mean loss to a running sum kept on the device, without waiting for the GPU.
+    void accumulate_loss(const int *label_tokens);
+
+    // Waits for the device, returns the mean of the losses accumulated since the last call and resets the sum.
+    float read_and_reset_loss();
 
     const gpt_weights *grad_weights() const { return weights_grads_; }
     const gpt_activations *activations() const { return activations_; }
@@ -162,6 +167,7 @@ private:
     int batch_size_ = 0;
     int seq_len_ = 0;
     int current_step_ = 0;
+    int loss_count_ = 0;
 
     float *loss_cache_ = nullptr;
     gpt_weights *weights_ = nullptr;

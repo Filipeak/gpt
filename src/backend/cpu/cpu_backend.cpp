@@ -62,6 +62,11 @@ void CPUBackend::device_memcpy_h2d(void *dst, const void *src, size_t size)
     memcpy(dst, src, size);
 }
 
+void CPUBackend::device_synchronize()
+{
+    // CPU work is synchronous, nothing to wait for.
+}
+
 void CPUBackend::device_embedding_forward(float *y, const float *wte, const float *wpe, const int *input_tokens, int batch_size, int seq_len, int hidden_size)
 {
     for (int b = 0; b < batch_size; ++b)
@@ -498,7 +503,7 @@ void CPUBackend::device_cross_entropy_softmax_fused_backward(float *grad_x, cons
 
 void CPUBackend::device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size_padded)
 {
-    *loss = 0.0f;
+    float sum = 0.0f;
 
     for (int b = 0; b < batch_size; ++b)
     {
@@ -507,11 +512,11 @@ void CPUBackend::device_cross_entropy_loss(float *loss, const float *y_softmax, 
             int label = tokens_labels[b * seq_len + s];
             float softmax_val = y_softmax[TENSOR_IDX_3D(b, s, label, seq_len, vocab_size_padded)];
 
-            *loss -= logf(softmax_val + 1e-8f); // Add a small epsilon to avoid log(0)
+            sum -= logf(softmax_val + 1e-8f); // Add a small epsilon to avoid log(0)
         }
     }
 
-    *loss /= (float)(batch_size * seq_len);
+    *loss += sum / (float)(batch_size * seq_len);
 }
 
 void CPUBackend::device_adamw_step(float *params, float *g, float *m, float *v, int size, float lr, float beta1, float beta2, float eps, float weight_decay, int step)

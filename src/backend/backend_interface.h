@@ -23,6 +23,9 @@ public:
 
     virtual void device_memcpy_h2d(void *dst, const void *src, size_t size) = 0;
 
+    // Blocks until all previously issued work on the device has finished.
+    virtual void device_synchronize() = 0;
+
     /**
      * Tensors:
      * - y              [batch_size, seq_len, hidden_size]
@@ -211,7 +214,7 @@ public:
      * - tokens_labels  [batch_size, seq_len]
      *
      * Performs:
-     * - Mean cross-entropy loss computation
+     * - loss += mean cross-entropy loss over the batch (accumulates, the caller zeroes loss)
      */
     virtual void device_cross_entropy_loss(float *loss, const float *y_softmax, const int *tokens_labels, int batch_size, int seq_len, int vocab_size_padded) = 0;
 

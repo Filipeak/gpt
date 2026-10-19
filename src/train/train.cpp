@@ -3,7 +3,7 @@
 #include "data_loader.h"
 #include "lr_scheduling.h"
 #include "logger.h"
-#include "benchmark.h"
+#include "timer.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -107,14 +107,13 @@ int main(int argc, char *argv[])
     int micro = 0;
     int global_steps = 0;
     int total_steps = epochs * loader.total_batches() / batch_accum_steps;
-
-    float running_training_step_time_ms = 0.0f;
-    float running_loss = 0.0f;
-    int running_count = 0;
+    const int tokens_per_step = batch_size * config.max_seq_len * batch_accum_steps;
 
     gpt.zero_grad();
 
-    LOG_INFO("Starting training loop for %d epochs...", epochs);
+    LOG_INFO("Starting training loop for %d epochs (%d optimizer steps)...", epochs, total_steps);
+
+    Timer step_timer;
 
     for (int epoch = 0; epoch < epochs; epoch++)
     {
@@ -125,15 +124,9 @@ int main(int argc, char *argv[])
             const int *input_tokens = loader.inputs();
             const int *label_tokens = loader.labels();
 
-            BENCHMARK_SCOPE(TrainingStep, {
-                gpt.forward(input_tokens);
-                gpt.backward(input_tokens, label_tokens);
-                float loss = gpt.loss(label_tokens);
-                running_loss += loss;
-            });
-
-            running_training_step_time_ms += elapsed_TrainingStep;
-            running_count++;
+            gpt.forward(input_tokens);
+            gpt.accumulate_loss(label_tokens);
+            gpt.backward(input_tokens, label_tokens);
 
             if (++micro % batch_accum_steps == 0)
             {
@@ -143,11 +136,12 @@ int main(int argc, char *argv[])
                 gpt.optimizer_step(lr, 0.9f, 0.95f, 0.1f);
                 gpt.zero_grad();
 
-                LOG_INFO("Epoch %d/%d  |  Batch %d/%d  |  Avg Loss: %.6f  |  Avg Time: %.2f ms", epoch + 1, epochs, loader.current_batch(), loader.total_batches(), running_loss / running_count, running_training_step_time_ms / running_count);
+                // The step's only sync point: reading the loss waits for the GPU, so the clock is read after it.
+                float loss = gpt.read_and_reset_loss();
+                float step_ms = step_timer.elapsed_ms();
+                step_timer.reset();
 
-                running_training_step_time_ms = 0.0f;
-                running_loss = 0.0f;
-                running_count = 0;
+                LOG_INFO("Epoch %d/%d  |  Step %d/%d  |  Loss: %.6f  |  Step time: %.2f ms  |  %.0f tokens/s", epoch + 1, epochs, global_steps, total_steps, loss, step_ms, tokens_per_step * 1000.0f / step_ms);
             }
         }
     }

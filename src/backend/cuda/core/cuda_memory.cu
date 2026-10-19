@@ -62,3 +62,8 @@ void CUDABackend::device_memcpy_h2d(void *dst, const void *src, size_t size)
 {
     CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyHostToDevice));
 }
+
+void CUDABackend::device_synchronize()
+{
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
