@@ -18,7 +18,7 @@ def download_shakespeare():
 
         print("Downloaded tiny Shakespeare dataset.")
     else:
-        print(f"Failed to download dataset. Status code: {response.status_code}")
+        raise SystemExit(f"Failed to download dataset. Status code: {response.status_code}")  # non-zero exit, so the CMake target fails
 
 
 if __name__ == "__main__":

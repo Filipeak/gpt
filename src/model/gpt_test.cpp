@@ -180,6 +180,22 @@ int main()
 
     LOG_INFO("GPT full forward/backward CPU-vs-CUDA test start");
 
+    // The goldens are written by tools/prep_grad.py
+    const char *golden_files[] = {TOKENS_FILE, WEIGHTS_FILE, REF_GRADS_FILE};
+
+    for (const char *path : golden_files)
+    {
+        FILE *fp = fopen(path, "rb");
+
+        if (!fp)
+        {
+            LOG_ERROR("Missing %s. Generate the goldens with: cmake --build build --target grad_goldens", path);
+            return 1;
+        }
+
+        fclose(fp);
+    }
+
     // Get tokens from file
     int *tokens = (int *)malloc((context + 1) * sizeof(int));
 

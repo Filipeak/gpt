@@ -1,5 +1,5 @@
 # Library for the GPT model
-add_library(gpt_model 
+add_library(gpt_model
     STATIC
         gpt.cpp
 )
@@ -26,3 +26,7 @@ target_link_libraries(gpt_test
         gpt_model
         gpt_backend
 )
+
+# Gradient check against the CPU backend and PyTorch: ctest --test-dir build -C Release
+# It reads the goldens from ./data, so it runs from the repo root.
+add_test(NAME gpt_test COMMAND gpt_test WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
