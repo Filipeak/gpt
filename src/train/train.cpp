@@ -154,7 +154,7 @@ int main(int argc, char *argv[])
                 gpt.optimizer_step(lr, 0.9f, 0.95f, 0.1f);
                 gpt.zero_grad();
 
-                // The step's only sync point: reading the loss waits for the GPU, so the clock is read after it.
+                // Reading the loss waits for the GPU, so the clock is read after it.
                 float loss = gpt.read_and_reset_loss();
                 float step_ms = step_timer.elapsed_ms();
                 step_timer.reset();

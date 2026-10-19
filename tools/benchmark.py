@@ -1,7 +1,14 @@
+"""
+PyTorch baseline for one training step: the same 124M model, batch and precision as gpt_train
+(fp32 weights, TF32 matmuls). Compare the full step with `gpt_train --batch-accum-steps 1`,
+which also runs AdamW after every batch.
+
+Run from the repo root: python tools/benchmark.py [--compile]
+"""
+
 import argparse
-import array
+import statistics
 import time
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -23,116 +30,64 @@ REAL_CFG = GPTConfig(
 )
 
 
-def bench_training(model, cfg, batch, seq, steps, warmup, device):
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.999), weight_decay=0.1)
-    tokens = torch.randint(0, cfg.vocab_size, (batch, seq + 1), device=device)
-    inp, lbl = tokens[:, :seq], tokens[:, 1: seq + 1]
+def bench_training(model, cfg, batch, seq, steps, warmup):
+    """Median ms of forward + loss + backward, and of the full step including AdamW."""
 
-    def step():
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.95), weight_decay=0.1)
+    tokens = torch.randint(0, cfg.vocab_size, (batch, seq + 1), device="cuda")
+    inp, lbl = tokens[:, :seq], tokens[:, 1:]
+
+    fwd_bwd_ms = []
+    step_ms = []
+
+    for i in range(warmup + steps):
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+
         opt.zero_grad(set_to_none=True)
         logits = model(inp)
         loss = F.cross_entropy(logits.reshape(-1, cfg.vocab_size), lbl.reshape(-1))
         loss.backward()
 
-    for _ in range(warmup):
-        step()
+        torch.cuda.synchronize()
+        t1 = time.perf_counter()
+
         opt.step()
 
-    if device.type == "cuda":
         torch.cuda.synchronize()
+        t2 = time.perf_counter()
 
-    t0 = time.perf_counter()
+        if i >= warmup:
+            fwd_bwd_ms.append((t1 - t0) * 1000.0)
+            step_ms.append((t2 - t0) * 1000.0)
 
-    for _ in range(steps):
-        step()
-        opt.step()
-
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-    per_step = (time.perf_counter() - t0) / steps
-
-    return batch * seq / per_step, per_step * 1000.0
-
-
-def load_prompt(path, device):
-    tokens = array.array("H")
-
-    with open(path, "rb") as f:
-        tokens.frombytes(f.read())
-
-    return torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
-
-
-@torch.no_grad()
-def bench_inference(model, cfg, prompt, gen_tokens, warmup, device):
-    model.eval()
-
-    def generate():
-        seq = prompt.clone()
-        first_token_ms = None
-
-        for i in range(gen_tokens):
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-
-            t = time.perf_counter()
-            logits = model(seq[:, -cfg.max_seq_len:])  # no KV cache
-            nxt = logits[:, -1, :].argmax(dim=-1, keepdim=True)
-            seq = torch.cat([seq, nxt], dim=1)
-
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-
-            if i == 0:
-                first_token_ms = (time.perf_counter() - t) * 1000.0
-
-        return first_token_ms
-
-    for _ in range(warmup):
-        generate()
-
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-    t0 = time.perf_counter()
-    ttft = generate()
-    total = time.perf_counter() - t0
-
-    return gen_tokens / total, ttft
+    return statistics.median(fwd_bwd_ms), statistics.median(step_ms)
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="PyTorch training step baseline")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--seq-len", type=int, default=REAL_CFG.max_seq_len)
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=5)
-    ap.add_argument("--gen-tokens", type=int, default=40)
-    ap.add_argument("--prompt", type=Path, default=Path(__file__).resolve().parent.parent / "res" / "prompt.bin")
-    ap.add_argument("--compile", action="store_true")
+    ap.add_argument("--compile", action="store_true", help="torch.compile the model (needs triton, so Python 3.13 or older)")
     args = ap.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not torch.cuda.is_available():
+        raise SystemExit("CUDA is not available, the timings would not be comparable.")
 
-    if device.type != "cuda":
-        print("WARNING: CUDA not available; timings on CPU are not comparable.")
-
-    model = GPTReference(REAL_CFG, dtype=torch.float32).to(device)
+    model = GPTReference(REAL_CFG).cuda()
 
     if args.compile:
         model = torch.compile(model)
 
-    label = "PyTorch eager" + (" + compile" if args.compile else "")
-    print(f"{label}  |  device={device}  |  TF32 matmul=on")
-    print(f"config: 124M, batch={args.batch_size}, seq={args.seq_len}")
+    label = f"PyTorch {torch.__version__} " + ("+ torch.compile" if args.compile else "eager")
+    tokens = args.batch_size * args.seq_len
+    fwd_bwd, step = bench_training(model, REAL_CFG, args.batch_size, args.seq_len, args.steps, args.warmup)
 
-    tok_s, ms = bench_training(model, REAL_CFG, args.batch_size, args.seq_len, args.steps, args.warmup, device)
-    print(f"training : {tok_s:>10.0f} tok/s   ({ms:.2f} ms/step, fwd+bwd, no AdamW)")
-
-    prompt = load_prompt(args.prompt, device)
-    inf_tok_s, ttft = bench_inference(model, REAL_CFG, prompt, gen_tokens=args.gen_tokens, warmup=2, device=device)
-    print(f"inference: {inf_tok_s:>10.1f} tok/s   (prompt {prompt.size(1)} tokens from {args.prompt.name}, +{args.gen_tokens} generated, TTFT {ttft:.2f} ms, no KV cache)")
+    print(f"{label}  |  124M, batch {args.batch_size} x seq {args.seq_len}, fp32 + TF32 matmuls  |  median of {args.steps} steps")
+    print(f"forward + backward : {fwd_bwd:7.2f} ms  ({tokens * 1000 / fwd_bwd:.0f} tokens/s)")
+    print(f"full step (+AdamW) : {step:7.2f} ms  ({tokens * 1000 / step:.0f} tokens/s)")
 
 
 if __name__ == "__main__":
