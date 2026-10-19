@@ -158,8 +158,10 @@ __global__ void flash_attention_2_forward_fp32_kernel(
                 local_max = max(local_max, __shfl_xor_sync(0xffffffff, local_max, offset));
             }
 
-            // Check new row max and compute correction factor
+            // Check new row max and compute correction factor.
+            // The old row stats are read before the __syncwarp() below, which orders these reads before lane 0 overwrites them at the end of the row.
             float old_rowmax = rowmax_shared[block_row];
+            float old_rowsumexp = rowsumexp_shared[block_row];
             float new_rowmax = fmaxf(local_max, old_rowmax);
             float correction = __expf(old_rowmax - new_rowmax);
 
@@ -184,7 +186,6 @@ __global__ void flash_attention_2_forward_fp32_kernel(
             }
 
             // Update rowsumexp with correction factor
-            float old_rowsumexp = rowsumexp_shared[block_row];
             float new_rowsumexp = old_rowsumexp * correction + local_sumexp;
 
             // Finally accumulate the output O
