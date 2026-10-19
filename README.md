@@ -85,7 +85,7 @@ Default model configuration (`src/train/train.cpp`):
 ### Prerequisites
 
 - NVIDIA GPU + **CUDA Toolkit 12.x**
-- **CMake ≥ 3.18** and a **C++17** compiler
+- **CMake >= 3.18** and a **C++17** compiler
 - **Python 3** for the dataset + tokenizer helpers: `pip install -r data/requirements.txt`
 
 Developed and tested on Windows 10 with MSVC and an RTX 3060 (12 GB). CMake targets the local GPU via `CUDA_ARCHITECTURES native`. The commands below use forward-slash paths and Linux/macOS binary names (`build/src/<tool>/gpt_<tool>`). On Windows the binaries live under a config subfolder with an `.exe` suffix (for example `build\src\train\Release\gpt_train.exe`).
