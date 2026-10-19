@@ -16,7 +16,6 @@ public:
     bool save_data(const char *output_path);
 
     const int *device_data();
-    const int *host_data() const { return data_; }
     size_t current_size() const { return current_index_; }
 
 private:

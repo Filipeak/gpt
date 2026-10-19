@@ -8,5 +8,4 @@ target_link_libraries(gpt_infer
     PRIVATE
         gpt_core
         gpt_model
-        gpt_tokenizer
 )
