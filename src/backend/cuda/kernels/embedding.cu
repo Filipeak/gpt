@@ -28,6 +28,8 @@ __global__ void embedding_forward_fp32_kernel(
 
 void CUDABackend::device_embedding_forward(float *y, const float *wte, const float *wpe, const int *input_tokens, int batch_size, int seq_len, int hidden_size)
 {
+    ProfileRange range(this, "embedding_fwd");
+
     const int n = batch_size * seq_len;
 
     dim3 blockDim(128, 4);
@@ -46,6 +48,8 @@ void CUDABackend::device_embedding_forward(float *y, const float *wte, const flo
 
 void CUDABackend::device_unembedding_forward(float *y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded)
 {
+    ProfileRange range(this, "unembedding_fwd");
+
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
@@ -111,6 +115,8 @@ __global__ void wte_backward_kernel(
 
 void CUDABackend::device_embedding_backward(float *grad_wte, float *grad_wpe, const float *grad_y, const int *input_tokens, int batch_size, int seq_len, int hidden_size)
 {
+    ProfileRange range(this, "embedding_bwd");
+
     dim3 wpe_blockDim(32, 8);
     dim3 wpe_gridDim((hidden_size + wpe_blockDim.x - 1) / wpe_blockDim.x, (seq_len + wpe_blockDim.y - 1) / wpe_blockDim.y);
 
@@ -139,6 +145,8 @@ void CUDABackend::device_embedding_backward(float *grad_wte, float *grad_wpe, co
 
 void CUDABackend::device_unembedding_backward(float *grad_x, float *grad_wte, const float *grad_y, const float *x, const float *wte, int batch_size, int seq_len, int hidden_size, int vocab_size_padded)
 {
+    ProfileRange range(this, "unembedding_bwd");
+
     const float alpha = 1.0f;
     const float beta = 0.0f;
 

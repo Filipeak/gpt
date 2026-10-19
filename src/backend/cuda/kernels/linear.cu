@@ -35,6 +35,8 @@ __global__ void add_bias_and_activate_fused_kernel(
 
 void CUDABackend::device_linear_activation_fused_forward(float *y, float *act, const float *x, const float *w, const float *b, bool activation, int batch_size, int seq_len, int input_size, int output_size)
 {
+    ProfileRange range(this, "linear_fwd");
+
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
@@ -115,6 +117,8 @@ __global__ void linear_bias_gradient_kernel(
 
 void CUDABackend::device_linear_backward(float *grad_x, float *grad_w, float *grad_b, const float *grad_y, const float *x, const float *w, int batch_size, int seq_len, int input_size, int output_size)
 {
+    ProfileRange range(this, "linear_bwd");
+
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
@@ -188,6 +192,8 @@ __global__ void activation_backward_kernel(
 
 void CUDABackend::device_activation_backward(float *grad_x, const float *grad_y, const float *x, int batch_size, int seq_len, int output_size)
 {
+    ProfileRange range(this, "gelu_bwd");
+
     const int n = batch_size * seq_len;
     const dim3 blockDim(32, 8);
     const dim3 gridDim((output_size + blockDim.x - 1) / blockDim.x, (n + blockDim.y - 1) / blockDim.y);

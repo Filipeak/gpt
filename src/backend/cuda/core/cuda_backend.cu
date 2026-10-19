@@ -1,5 +1,6 @@
 #include "cuda_backend.h"
 #include "utils/cuda_utils.cuh"
+#include <nvtx3/nvToolsExt.h>
 
 CUDABackend::CUDABackend(unsigned long seed)
 {
@@ -19,4 +20,15 @@ CUDABackend::~CUDABackend()
     CURAND_CHECK(curandDestroyGenerator(curand_handle_));
 
     CUDA_CHECK(cudaFree(clip_norm_device_));
+}
+
+// NVTX calls are near free when no profiler is attached.
+void CUDABackend::profile_range_push(const char *name)
+{
+    nvtxRangePushA(name);
+}
+
+void CUDABackend::profile_range_pop()
+{
+    nvtxRangePop();
 }

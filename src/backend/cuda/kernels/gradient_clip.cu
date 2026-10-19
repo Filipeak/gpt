@@ -34,6 +34,8 @@ __global__ void scale_and_clip_grad_norm_f32_v4_kernel(
 
 void CUDABackend::device_scale_and_clip_grad(float *g, int size, float max_norm, int accum_steps)
 {
+    ProfileRange range(this, "clip_grad");
+
     cublasPointerMode_t previous_pointer_mode;
     CUBLAS_CHECK(cublasGetPointerMode(cublas_handle_, &previous_pointer_mode));
     CUBLAS_CHECK(cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));

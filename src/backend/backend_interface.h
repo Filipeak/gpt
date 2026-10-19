@@ -26,6 +26,11 @@ public:
     // Blocks until all previously issued work on the device has finished.
     virtual void device_synchronize() = 0;
 
+    // Opens and closes a named range for profilers (NVTX on CUDA). Ranges nest. Use ProfileRange instead of calling these directly.
+    virtual void profile_range_push(const char *name) = 0;
+    
+    virtual void profile_range_pop() = 0;
+
     /**
      * Tensors:
      * - y              [batch_size, seq_len, hidden_size]

@@ -145,6 +145,8 @@ __global__ void layernorm_residual_fused_forward_fp32_v4_kernel(
 
 void CUDABackend::device_layernorm_residual_fused_forward(float *y, float *means, float *vars, float *x, const float *residual, const float *gamma, const float *beta, int batch_size, int seq_len, int hidden_size)
 {
+    ProfileRange range(this, "layernorm_fwd");
+
     CUDA_ASSERT(hidden_size % 4 == 0); // Ensure hidden_size is a multiple of 4 for float4 processing
 
     const int n = batch_size * seq_len;
@@ -357,6 +359,8 @@ __global__ void layernorm_backward_weights_bias_fp32_kernel(
 
 void CUDABackend::device_layernorm_residual_fused_backward(float *grad_x, float *grad_gamma, float *grad_beta, const float *grad_y, const float *grad_residual, const float *x, const float *means, const float *vars, const float *gamma, int batch_size, int seq_len, int hidden_size)
 {
+    ProfileRange range(this, "layernorm_bwd");
+
     CUDA_ASSERT(hidden_size % 4 == 0); // Ensure hidden_size is a multiple of 4 for float4 processing
 
     const int n = batch_size * seq_len;

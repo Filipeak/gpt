@@ -248,6 +248,8 @@ __global__ void flash_attention_2_forward_fp32_kernel(
 
 void CUDABackend::device_flash_attention_forward(float *y, float *logsumexp, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
 {
+    ProfileRange range(this, "flash_attention_fwd");
+
     const int num_warps = 4;
     const int Br = 16; // must be divisible by num_warps
     const int Bc = 32; // must be divisible by 32
@@ -544,6 +546,8 @@ __global__ void flash_attention_2_backward_fp32_kernel(
 
 void CUDABackend::device_flash_attention_backward(float *grad_x, float *D_cache, const float *logsumexp, const float *grad_y, const float *y, const float *qkv, int batch_size, int seq_len, int hidden_size, int num_heads)
 {
+    ProfileRange range(this, "flash_attention_bwd");
+
     CUDA_CHECK(cudaMemset(grad_x, 0, batch_size * seq_len * hidden_size * 3 * sizeof(float)));
 
     flash_attention_precompute_rowsums_kernel<<<dim3(batch_size * seq_len, num_heads), 32>>>(

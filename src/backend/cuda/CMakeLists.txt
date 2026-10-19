@@ -25,6 +25,7 @@ target_link_libraries(backend_cuda
         CUDA::cudart
         CUDA::curand
         CUDA::cublas
+        CUDA::nvtx3
 )
 
 set_target_properties(backend_cuda PROPERTIES

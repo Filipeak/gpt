@@ -111,6 +111,8 @@ __global__ void softmax_forward_fp32_v4_kernel(
 
 void CUDABackend::device_softmax_forward(float *y, const float *x, int batch_size, int seq_len, int vocab_size, int vocab_size_padded)
 {
+    ProfileRange range(this, "softmax_fwd");
+
     const int n = batch_size * seq_len;
 
     softmax_forward_fp32_v4_kernel<<<n, 1024>>>(

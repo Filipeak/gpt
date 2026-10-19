@@ -67,6 +67,16 @@ void CPUBackend::device_synchronize()
     // CPU work is synchronous, nothing to wait for.
 }
 
+void CPUBackend::profile_range_push(const char *)
+{
+    // No profiler integration on the CPU backend.
+}
+
+void CPUBackend::profile_range_pop()
+{
+    // No profiler integration on the CPU backend.
+}
+
 void CPUBackend::device_embedding_forward(float *y, const float *wte, const float *wpe, const int *input_tokens, int batch_size, int seq_len, int hidden_size)
 {
     for (int b = 0; b < batch_size; ++b)

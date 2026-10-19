@@ -3,6 +3,7 @@
 #include "data_loader.h"
 #include "lr_scheduling.h"
 #include "logger.h"
+#include "profile_range.h"
 #include "timer.h"
 #include <cstdlib>
 #include <cstring>
@@ -11,6 +12,7 @@ int main(int argc, char *argv[])
 {
     // Parse command-line arguments
     int epochs = -1;
+    int max_steps = -1;
     int batch_size = 2;
     int batch_accum_steps = 2;
     char *input_file = nullptr;
@@ -23,6 +25,10 @@ int main(int argc, char *argv[])
         if (strcmp(argv[i], "--epochs") == 0 && i + 1 < argc)
         {
             epochs = atoi(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--max-steps") == 0 && i + 1 < argc)
+        {
+            max_steps = atoi(argv[++i]);
         }
         else if (strcmp(argv[i], "--batch-size") == 0 && i + 1 < argc)
         {
@@ -50,14 +56,19 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (epochs <= 0 || batch_size <= 0 || batch_accum_steps <= 0 || output_file == nullptr || data_file == nullptr)
+    if (epochs <= 0 || max_steps == 0 || batch_size <= 0 || batch_accum_steps <= 0 || data_file == nullptr)
     {
-        LOG_ERROR("Usage: %s --epochs <num_epochs> [--batch-size <batch_size>] [--batch-accum-steps <steps>] [--input <input_file>] --output <output_file> [--data <data_file>] [--seed <seed>]", argv[0]);
+        LOG_ERROR("Usage: %s --epochs <num_epochs> [--max-steps <optimizer_steps>] [--batch-size <batch_size>] [--batch-accum-steps <steps>] [--input <input_file>] [--output <output_file>] --data <data_file> [--seed <seed>]", argv[0]);
         return 1;
     }
 
     // Print configuration
-    LOG_INFO("Training configuration: epochs=%d, batch_size=%d, batch_accum_steps=%d, input_file=%s, output_file=%s, data_file=%s, seed=%lu", epochs, batch_size, batch_accum_steps, (input_file != nullptr) ? input_file : "None", output_file, data_file, seed);
+    LOG_INFO("Training configuration: epochs=%d, max_steps=%d, batch_size=%d, batch_accum_steps=%d, input_file=%s, output_file=%s, data_file=%s, seed=%lu", epochs, max_steps, batch_size, batch_accum_steps, (input_file != nullptr) ? input_file : "None", (output_file != nullptr) ? output_file : "None", data_file, seed);
+
+    if (output_file == nullptr)
+    {
+        LOG_WARN("No --output given, the trained weights will not be saved.");
+    }
 
     // Prepare config
     gpt_config config;
@@ -115,21 +126,28 @@ int main(int argc, char *argv[])
 
     Timer step_timer;
 
-    for (int epoch = 0; epoch < epochs; epoch++)
+    // max_steps is -1 unless --max-steps is given, so global_steps never reaches it.
+    for (int epoch = 0; epoch < epochs && global_steps != max_steps; epoch++)
     {
         loader.reset_epoch();
 
-        while (loader.next_batch())
+        while (global_steps != max_steps && loader.next_batch())
         {
             const int *input_tokens = loader.inputs();
             const int *label_tokens = loader.labels();
 
-            gpt.forward(input_tokens);
-            gpt.accumulate_loss(label_tokens);
-            gpt.backward(input_tokens, label_tokens);
+            {
+                ProfileRange range(backend, "micro_step");
+
+                gpt.forward(input_tokens);
+                gpt.accumulate_loss(label_tokens);
+                gpt.backward(input_tokens, label_tokens);
+            }
 
             if (++micro % batch_accum_steps == 0)
             {
+                ProfileRange range(backend, "update");
+
                 float lr = get_lr_cosine_decay(global_steps++, 100, total_steps, 6e-4f, 6e-5f);
 
                 gpt.unscale_and_clip_grads(1.0f, batch_accum_steps);
@@ -149,7 +167,7 @@ int main(int argc, char *argv[])
     // Finish training and save checkpoint
     LOG_INFO("Training completed.");
 
-    if (!gpt.save_checkpoint(output_file))
+    if (output_file != nullptr && !gpt.save_checkpoint(output_file))
     {
         LOG_ERROR("Failed to save checkpoint.");
         return 1;

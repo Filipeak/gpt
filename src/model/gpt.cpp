@@ -1,5 +1,7 @@
 #include "gpt.h"
 #include "logger.h"
+#include "profile_range.h"
+#include <cstdio>
 #include <cstdlib>
 #include <cmath>
 
@@ -432,6 +434,8 @@ void GPT::forward(const int *input_tokens)
         return;
     }
 
+    ProfileRange range(backend_, "forward");
+
     float *input = NULL;
     float *residual = NULL;
 
@@ -442,6 +446,11 @@ void GPT::forward(const int *input_tokens)
     // Transformer Layers
     for (int layer = 0; layer < config_->num_layers; layer++)
     {
+        // Profile the current layer
+        char layer_name[16];
+        snprintf(layer_name, sizeof(layer_name), "layer_%d", layer);
+        ProfileRange layer_range(backend_, layer_name);
+
         // Calculate pointers for the current layer's weights and activations_
         float *ln_1_out = activations_->ln_1_out + layer * batch_size_ * seq_len_ * config_->d_model;
         float *ln_1_means = activations_->ln_1_means + layer * batch_size_ * seq_len_;
@@ -531,6 +540,8 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
         return;
     }
 
+    ProfileRange range(backend_, "backward");
+
     float *grad_y = NULL;
     float *grad_residual = NULL;
 
@@ -551,6 +562,11 @@ void GPT::backward(const int *input_tokens, const int *label_tokens)
     // Backpropagation through Transformer layers
     for (int layer = config_->num_layers - 1; layer >= 0; layer--)
     {
+        // Profile the current layer
+        char layer_name[16];
+        snprintf(layer_name, sizeof(layer_name), "layer_%d", layer);
+        ProfileRange layer_range(backend_, layer_name);
+
         // Store the current grad_y for residual connection 2
         grad_residual = grad_y;
 
@@ -655,6 +671,8 @@ void GPT::optimizer_step(float learning_rate, float beta1, float beta2, float de
         return;
     }
 
+    ProfileRange range(backend_, "optimizer_step");
+
     current_step_++;
 
     const float eps = 1e-8f;
@@ -703,6 +721,8 @@ void GPT::accumulate_loss(const int *label_tokens)
         LOG_ERROR("activations not allocated. Call set_size() and forward() before accumulate_loss().");
         return;
     }
+
+    ProfileRange range(backend_, "loss");
 
     backend_->device_cross_entropy_loss(loss_cache_, activations_->probs, label_tokens, batch_size_, seq_len_, config_->vocab_size_padded);
     loss_count_++;

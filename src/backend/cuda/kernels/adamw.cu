@@ -70,6 +70,8 @@ __global__ void adamw_step_fp32_v4_kernel(
 
 void CUDABackend::device_adamw_step(float *params, float *g, float *m, float *v, int size, float lr, float beta1, float beta2, float eps, float weight_decay, int step)
 {
+    ProfileRange range(this, "adamw");
+
     CUDA_ASSERT(size % 4 == 0); // Ensure size is a multiple of 4 for float4 processing
     size /= 4;                  // Adjust size for float4 processing
 
