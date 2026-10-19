@@ -7,7 +7,33 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_ARCHITECTURES native)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(GPT_DEBUG "Sync and check for CUDA errors after every op, naming the op that failed (slow)" OFF)
+
+find_package(CUDAToolkit REQUIRED)
+
 add_subdirectory(src)
+
+# Memory and race checks: cmake --build build --config Release --target sanitize
+# Runs the gradient test (tiny model) under each compute-sanitizer tool, stopping at the first one that reports errors.
+find_program(COMPUTE_SANITIZER_EXECUTABLE compute-sanitizer HINTS "${CUDAToolkit_BIN_DIR}/../compute-sanitizer")
+
+if(COMPUTE_SANITIZER_EXECUTABLE)
+    set(SANITIZE_COMMANDS)
+
+    # -q prints only findings. Without it, the "ERROR SUMMARY: 0 errors" line looks like a compiler error to MSBuild and fails the target.
+    foreach(tool memcheck racecheck initcheck synccheck)
+        list(APPEND SANITIZE_COMMANDS COMMAND ${COMPUTE_SANITIZER_EXECUTABLE} -q --tool ${tool} --error-exitcode 1 $<TARGET_FILE:gpt_test>)
+    endforeach()
+
+    add_custom_target(sanitize
+        ${SANITIZE_COMMANDS}
+        DEPENDS gpt_test
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        USES_TERMINAL
+        COMMENT "Running gpt_test under compute-sanitizer (memcheck, racecheck, initcheck, synccheck)")
+else()
+    message(STATUS "compute-sanitizer not found, the sanitize target is unavailable")
+endif()
 
 # Profiling: cmake --build build --config Release --target nsys
 # Records a few training steps and prints GPU time per NVTX range and per kernel.

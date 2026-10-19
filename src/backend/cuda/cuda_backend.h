@@ -2,6 +2,8 @@
 
 #include "../backend_interface.h"
 #include "../profile_range.h"
+#include <string>
+#include <vector>
 
 struct cublasContext;
 struct curandGenerator_st;
@@ -44,4 +46,8 @@ private:
     cublasContext *cublas_handle_;
     curandGenerator_st *curand_handle_;
     float *clip_norm_device_;
+
+    // Names of the open profile ranges, used by GPT_DEBUG builds to say where an error happened.
+    // Declared in every build so the class layout does not depend on the flag.
+    std::vector<std::string> range_stack_;
 };

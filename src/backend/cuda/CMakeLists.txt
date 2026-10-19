@@ -28,6 +28,13 @@ target_link_libraries(backend_cuda
         CUDA::nvtx3
 )
 
+# Source line info for compute-sanitizer and Nsight Compute reports, it does not slow the kernels down.
+target_compile_options(backend_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+
+if(GPT_DEBUG)
+    target_compile_definitions(backend_cuda PRIVATE GPT_DEBUG)
+endif()
+
 set_target_properties(backend_cuda PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )

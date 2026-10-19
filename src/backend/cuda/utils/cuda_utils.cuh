@@ -6,72 +6,65 @@
 #include <cublas_v2.h>
 #include <curand.h>
 
-#define CUDA_ASSERT(expr)                            \
-    do                                               \
-    {                                                \
-        if (!(expr))                                 \
-        {                                            \
-            printf("CUDA Assertion Failed: %s:%i\n", \
-                   __FILE__,                         \
-                   __LINE__);                        \
-            abort();                                 \
-        }                                            \
+#define CUDA_ASSERT(expr)                                     \
+    do                                                        \
+    {                                                         \
+        if (!(expr))                                          \
+        {                                                     \
+            fprintf(stderr, "CUDA Assertion Failed: %s:%i\n", \
+                    __FILE__,                                 \
+                    __LINE__);                                \
+            abort();                                          \
+        }                                                     \
     } while (0)
 
-#define CUDA_CHECK(expr_to_check)                         \
-    do                                                    \
-    {                                                     \
-        cudaError_t result = expr_to_check;               \
-        if (result != cudaSuccess)                        \
-        {                                                 \
-            printf("CUDA Runtime Error: %s:%i:%d = %s\n", \
-                   __FILE__,                              \
-                   __LINE__,                              \
-                   result,                                \
-                   cudaGetErrorString(result));           \
-            abort();                                      \
-        }                                                 \
+#define CUDA_CHECK(expr_to_check)                                  \
+    do                                                             \
+    {                                                              \
+        cudaError_t result = expr_to_check;                        \
+        if (result != cudaSuccess)                                 \
+        {                                                          \
+            fprintf(stderr, "CUDA Runtime Error: %s:%i:%d = %s\n", \
+                    __FILE__,                                      \
+                    __LINE__,                                      \
+                    result,                                        \
+                    cudaGetErrorString(result));                   \
+            abort();                                               \
+        }                                                          \
     } while (0)
 
-#define CUBLAS_CHECK(expr_to_check)                    \
-    do                                                 \
-    {                                                  \
-        cublasStatus_t result = expr_to_check;         \
-        if (result != CUBLAS_STATUS_SUCCESS)           \
-        {                                              \
-            printf("cuBLAS Runtime Error: %s:%i:%d\n", \
-                   __FILE__,                           \
-                   __LINE__,                           \
-                   result);                            \
-            abort();                                   \
-        }                                              \
+#define CUBLAS_CHECK(expr_to_check)                             \
+    do                                                          \
+    {                                                           \
+        cublasStatus_t result = expr_to_check;                  \
+        if (result != CUBLAS_STATUS_SUCCESS)                    \
+        {                                                       \
+            fprintf(stderr, "cuBLAS Runtime Error: %s:%i:%d\n", \
+                    __FILE__,                                   \
+                    __LINE__,                                   \
+                    result);                                    \
+            abort();                                            \
+        }                                                       \
     } while (0)
 
-#define CURAND_CHECK(expr_to_check)                    \
-    do                                                 \
-    {                                                  \
-        curandStatus_t result = expr_to_check;         \
-        if (result != CURAND_STATUS_SUCCESS)           \
-        {                                              \
-            printf("cuRAND Runtime Error: %s:%i:%d\n", \
-                   __FILE__,                           \
-                   __LINE__,                           \
-                   result);                            \
-            abort();                                   \
-        }                                              \
+#define CURAND_CHECK(expr_to_check)                             \
+    do                                                          \
+    {                                                           \
+        curandStatus_t result = expr_to_check;                  \
+        if (result != CURAND_STATUS_SUCCESS)                    \
+        {                                                       \
+            fprintf(stderr, "cuRAND Runtime Error: %s:%i:%d\n", \
+                    __FILE__,                                   \
+                    __LINE__,                                   \
+                    result);                                    \
+            abort();                                            \
+        }                                                       \
     } while (0)
 
-#ifndef NDEBUG
-#define CUDA_KERNEL_CHECK()                  \
-    do                                       \
-    {                                        \
-        CUDA_CHECK(cudaGetLastError());      \
-        CUDA_CHECK(cudaDeviceSynchronize()); \
-    } while (0)
-#else
+// Catches launch errors only. Errors while a kernel runs show up at the next sync;
+// build with -DGPT_DEBUG=ON to sync and check after every op (see CUDABackend::profile_range_pop).
 #define CUDA_KERNEL_CHECK()             \
     do                                  \
     {                                   \
         CUDA_CHECK(cudaGetLastError()); \
     } while (0)
-#endif
