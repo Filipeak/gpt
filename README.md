@@ -4,8 +4,6 @@ A GPT-2 (124M) training stack implemented in C++ and CUDA, with no PyTorch, cuDN
 
 The project is a study of how GPU training works in practice and where its time is spent. As a correctness check, the entire model also runs on a CPU backend, and its gradients are verified two ways - against that CPU reference and against PyTorch autograd - every tensor matching to within 1e-5.
 
-Generation here is deliberately simple. Fast inference is a separate project, [gpt-inference](https://github.com/Filipeak/gpt-inference): an optimized inference engine for the same model.
-
 ## Sample output
 
 The 124M model in this repo, trained on tiny-shakespeare for 80 epochs on a single RTX 3060, continuing a prompt:
